@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 视频生成工作台</title>
+  <meta name="description" content="全网视频模型生成工作台 - 支持 Veo、Grok 等主流 AI 视频模型" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- 背景粒子 -->
+  <canvas id="particles-canvas"></canvas>
+
+  <!-- 顶部导航 -->
+  <header class="top-bar">
+    <div class="logo">
+      <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polygon points="23 7 16 12 23 17 23 7" />
+        <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+      </svg>
+      <span class="logo-text">AI 视频工作台</span>
+    </div>
+    <div class="top-bar-right">
+      <div class="status-dot online"></div>
+      <span class="status-text">服务在线</span>
+    </div>
+  </header>
+
+  <!-- 主内容区 -->
+  <main class="main-content">
+    <!-- 左侧面板：参数配置 -->
+    <section class="panel panel-config" id="config-panel">
+      <div class="panel-header">
+        <h2 class="panel-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="panel-icon">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+          生成配置
+        </h2>
+      </div>
+
+      <div class="panel-body">
+        <!-- API Key -->
+        <div class="form-group">
+          <label class="form-label" for="input-key">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon">
+              <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+            </svg>
+            API Key
+          </label>
+          <input type="password" id="input-key" class="form-input" placeholder="输入你的 API Key" autocomplete="off" />
+          <button class="btn-toggle-key" id="btn-toggle-key" title="显示/隐藏 Key">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="eye-icon">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </button>
+        </div>
+
+        <!-- 代理地址（可选） -->
+        <div class="form-group">
+          <label class="form-label" for="input-proxy">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon">
+              <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
+            </svg>
+            代理地址 <span style="font-weight:400;text-transform:none;letter-spacing:0;opacity:.5">(Worker URL, 选填)</span>
+          </label>
+          <input type="url" id="input-proxy" class="form-input" placeholder="https://your-worker.workers.dev" autocomplete="off" />
+        </div>
+
+        <!-- 模型选择 -->
+        <div class="form-group">
+          <label class="form-label" for="select-model">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+              <line x1="8" y1="21" x2="16" y2="21" />
+              <line x1="12" y1="17" x2="12" y2="21" />
+            </svg>
+            模型
+          </label>
+          <select id="select-model" class="form-select">
+            <optgroup label="Google Veo">
+              <option value="veo-3" selected>Veo 3</option>
+              <option value="veo-3-fast">Veo 3 Fast</option>
+              <option value="veo-3.1-fast">Veo 3.1 Fast</option>
+            </optgroup>
+            <optgroup label="Grok">
+              <option value="grok-video">Grok Video</option>
+            </optgroup>
+          </select>
+        </div>
+
+        <!-- 画面比例 -->
+        <div class="form-group">
+          <label class="form-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon">
+              <rect x="2" y="2" width="20" height="20" rx="2" ry="2" />
+              <line x1="2" y1="12" x2="22" y2="12" />
+              <line x1="12" y1="2" x2="12" y2="22" />
+            </svg>
+            画面比例
+          </label>
+          <div class="ratio-group" id="ratio-group">
+            <button class="ratio-btn active" data-ratio="16:9">
+              <div class="ratio-preview r-16-9"></div>
+              <span>16:9</span>
+            </button>
+            <button class="ratio-btn" data-ratio="9:16">
+              <div class="ratio-preview r-9-16"></div>
+              <span>9:16</span>
+            </button>
+            <button class="ratio-btn" data-ratio="1:1">
+              <div class="ratio-preview r-1-1"></div>
+              <span>1:1</span>
+            </button>
+            <button class="ratio-btn" data-ratio="4:3">
+              <div class="ratio-preview r-4-3"></div>
+              <span>4:3</span>
+            </button>
+            <button class="ratio-btn" data-ratio="3:4">
+              <div class="ratio-preview r-3-4"></div>
+              <span>3:4</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 参考图片 -->
+        <div class="form-group">
+          <label class="form-label" for="input-images">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
+            参考图片 URL
+          </label>
+          <div class="image-url-list" id="image-url-list">
+            <div class="image-url-row">
+              <input type="url" class="form-input image-url-input" placeholder="https://example.com/image.jpg" />
+              <button class="btn-icon btn-remove-url" title="移除" style="visibility: hidden;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              </button>
+            </div>
+          </div>
+          <button class="btn-add-url" id="btn-add-url">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+            添加图片
+          </button>
+        </div>
+
+        <!-- 提示词 -->
+        <div class="form-group">
+          <label class="form-label" for="input-prompt">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon">
+              <line x1="17" y1="10" x2="3" y2="10" />
+              <line x1="21" y1="6" x2="3" y2="6" />
+              <line x1="21" y1="14" x2="3" y2="14" />
+              <line x1="17" y1="18" x2="3" y2="18" />
+            </svg>
+            提示词
+          </label>
+          <textarea id="input-prompt" class="form-textarea" rows="5" placeholder="描述你想要生成的视频内容..."></textarea>
+          <div class="char-count"><span id="char-count">0</span> 字</div>
+        </div>
+
+        <!-- 提交按钮 -->
+        <button class="btn-submit" id="btn-submit">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon-svg">
+            <path d="M22 2L11 13" />
+            <path d="M22 2L15 22L11 13L2 9L22 2Z" />
+          </svg>
+          <span>提交生成任务</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- 右侧面板：任务状态与结果 -->
+    <section class="panel panel-result" id="result-panel">
+      <div class="panel-header">
+        <h2 class="panel-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="panel-icon">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+          </svg>
+          任务状态
+        </h2>
+        <div class="task-count" id="task-count">0 个任务</div>
+      </div>
+
+      <div class="panel-body" id="task-list-container">
+        <!-- 空状态 -->
+        <div class="empty-state" id="empty-state">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon">
+            <rect x="2" y="2" width="20" height="20" rx="3" />
+            <path d="M7 2v20" />
+            <path d="M17 2v20" />
+            <path d="M2 12h20" />
+            <path d="M2 7h5" />
+            <path d="M2 17h5" />
+            <path d="M17 7h5" />
+            <path d="M17 17h5" />
+          </svg>
+          <p class="empty-title">暂无任务</p>
+          <p class="empty-desc">配置参数并提交，开始生成你的 AI 视频</p>
+        </div>
+
+        <!-- 任务列表（JS 动态填充） -->
+        <div class="task-list" id="task-list"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Toast 通知 -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- 视频预览模态框 -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal-content" id="modal-content">
+      <button class="modal-close" id="modal-close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+      </button>
+      <video id="modal-video" controls class="modal-video"></video>
+      <div class="modal-actions">
+        <a id="modal-download" class="btn-download" href="#" download target="_blank">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+          下载视频
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
