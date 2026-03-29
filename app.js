@@ -183,7 +183,7 @@ async function submitTask() {
       body.images = images;
     }
 
-    const resp = await fetch(API_URL, {
+    const resp = await fetch(getApiUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
