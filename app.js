@@ -3,10 +3,9 @@
    ============================================ */
 
 const API_DIRECT = 'https://api.pearktrue.cn/api/video_generate';
-const POLL_INTERVAL = 5000; // 5 秒轮询
+const IMGBB_KEY = 'c2d0c798539d2dab9107049c7f544d1d';
+const POLL_INTERVAL = 5000;
 
-// 代理 URL：部署 Cloudflare Worker 后填入，格式如 https://your-worker.your-name.workers.dev
-// 实际请求会发到 {PROXY_URL}/api/video_generate
 function getApiUrl() {
   const proxy = localStorage.getItem('video_gen_proxy') || '';
   if (proxy) {
@@ -17,9 +16,10 @@ function getApiUrl() {
 
 // ---- 状态管理 ----
 const state = {
-  tasks: [],       // { id, taskId, status, progress, model, prompt, ratio, videoUrl, createdAt }
-  pollers: {},     // taskId -> intervalId
+  tasks: [],
+  pollers: {},
   selectedRatio: '16:9',
+  uploadedImages: [], // { id, fileName, previewUrl, imgbbUrl, uploading, error }
 };
 
 // ---- DOM 缓存 ----
@@ -29,8 +29,10 @@ const dom = {
   toggleKey: document.getElementById('btn-toggle-key'),
   modelSelect: document.getElementById('select-model'),
   ratioGroup: document.getElementById('ratio-group'),
-  imageList: document.getElementById('image-url-list'),
-  addUrlBtn: document.getElementById('btn-add-url'),
+  dropZone: document.getElementById('image-drop-zone'),
+  fileInput: document.getElementById('image-file-input'),
+  previewList: document.getElementById('image-preview-list'),
+  imageTip: document.getElementById('image-tip'),
   promptInput: document.getElementById('input-prompt'),
   charCount: document.getElementById('char-count'),
   submitBtn: document.getElementById('btn-submit'),
@@ -54,12 +56,28 @@ function init() {
   resumePolling();
 }
 
+// ---- API Key 哈希（用于隔离不同密钥的任务记录） ----
+function hashKey(key) {
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = ((hash << 5) - hash) + key.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+function getTasksStorageKey() {
+  const key = dom.keyInput.value.trim();
+  if (!key) return 'video_gen_tasks_default';
+  return 'video_gen_tasks_' + hashKey(key);
+}
+
 // ---- 本地持久化 ----
 function saveState() {
   try {
     localStorage.setItem('video_gen_key', dom.keyInput.value);
     localStorage.setItem('video_gen_proxy', dom.proxyInput.value.trim());
-    localStorage.setItem('video_gen_tasks', JSON.stringify(state.tasks));
+    localStorage.setItem(getTasksStorageKey(), JSON.stringify(state.tasks));
   } catch (e) { /* ignore */ }
 }
 
@@ -69,9 +87,17 @@ function loadState() {
     if (key) dom.keyInput.value = key;
     const proxy = localStorage.getItem('video_gen_proxy');
     if (proxy) dom.proxyInput.value = proxy;
-    const tasks = localStorage.getItem('video_gen_tasks');
-    if (tasks) state.tasks = JSON.parse(tasks);
+    loadTasksForCurrentKey();
   } catch (e) { /* ignore */ }
+}
+
+function loadTasksForCurrentKey() {
+  try {
+    const raw = localStorage.getItem(getTasksStorageKey());
+    state.tasks = raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    state.tasks = [];
+  }
 }
 
 // ---- 事件绑定 ----
@@ -95,18 +121,36 @@ function bindEvents() {
     state.selectedRatio = btn.dataset.ratio;
   });
 
-  // 添加图片 URL
-  dom.addUrlBtn.addEventListener('click', addImageUrlRow);
+  // ---- 图片拖拽上传 ----
+  dom.dropZone.addEventListener('click', () => dom.fileInput.click());
 
-  // 移除图片 URL (委托)
-  dom.imageList.addEventListener('click', (e) => {
-    const btn = e.target.closest('.btn-remove-url');
+  dom.fileInput.addEventListener('change', (e) => {
+    handleFiles(e.target.files);
+    dom.fileInput.value = ''; // 允许重复选择同名文件
+  });
+
+  dom.dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dom.dropZone.classList.add('dragover');
+  });
+
+  dom.dropZone.addEventListener('dragleave', () => {
+    dom.dropZone.classList.remove('dragover');
+  });
+
+  dom.dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dom.dropZone.classList.remove('dragover');
+    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+    if (files.length) handleFiles(files);
+  });
+
+  // 图片预览列表 - 事件委托（删除）
+  dom.previewList.addEventListener('click', (e) => {
+    const btn = e.target.closest('.img-remove-btn');
     if (!btn) return;
-    const rows = dom.imageList.querySelectorAll('.image-url-row');
-    if (rows.length > 1) {
-      btn.closest('.image-url-row').remove();
-      updateRemoveButtons();
-    }
+    const id = parseFloat(btn.dataset.id);
+    removeUploadedImage(id);
   });
 
   // 提交
@@ -121,37 +165,125 @@ function bindEvents() {
     if (e.key === 'Escape') closeModal();
   });
 
-  // key/proxy 变更保存
-  dom.keyInput.addEventListener('change', saveState);
+  // Key 变更 → 切换任务记录
+  dom.keyInput.addEventListener('change', () => {
+    localStorage.setItem('video_gen_key', dom.keyInput.value);
+    // 停掉当前所有轮询
+    Object.keys(state.pollers).forEach(stopPolling);
+    // 加载新 key 对应的任务
+    loadTasksForCurrentKey();
+    renderTaskList();
+    resumePolling();
+  });
+
   dom.proxyInput.addEventListener('change', saveState);
 }
 
-// ---- 图片 URL 行 ----
-function addImageUrlRow() {
-  const row = document.createElement('div');
-  row.className = 'image-url-row';
-  row.innerHTML = `
-    <input type="url" class="form-input image-url-input" placeholder="https://example.com/image.jpg" />
-    <button class="btn-icon btn-remove-url" title="移除">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-    </button>
-  `;
-  dom.imageList.appendChild(row);
-  updateRemoveButtons();
-}
+// ---- imgbb 上传 ----
+async function uploadToImgbb(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const base64 = reader.result.split(',')[1];
+        const formData = new FormData();
+        formData.append('key', IMGBB_KEY);
+        formData.append('image', base64);
+        formData.append('name', file.name.replace(/\.[^.]+$/, ''));
 
-function updateRemoveButtons() {
-  const rows = dom.imageList.querySelectorAll('.image-url-row');
-  rows.forEach((row, i) => {
-    const btn = row.querySelector('.btn-remove-url');
-    btn.style.visibility = rows.length > 1 ? 'visible' : 'hidden';
+        const resp = await fetch('https://api.imgbb.com/1/upload', {
+          method: 'POST',
+          body: formData,
+        });
+        const json = await resp.json();
+
+        if (json.success && json.data?.url) {
+          resolve(json.data.url);
+        } else {
+          reject(new Error(json.error?.message || '图片上传失败'));
+        }
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.onerror = () => reject(new Error('读取文件失败'));
+    reader.readAsDataURL(file);
   });
 }
 
-// ---- 获取图片 URL 数组 ----
-function getImageUrls() {
-  const inputs = dom.imageList.querySelectorAll('.image-url-input');
-  return Array.from(inputs).map(i => i.value.trim()).filter(Boolean);
+// ---- 图片处理 ----
+function handleFiles(files) {
+  Array.from(files).forEach(file => {
+    if (!file.type.startsWith('image/')) return;
+
+    const img = {
+      id: Date.now() + Math.random(),
+      fileName: file.name,
+      previewUrl: URL.createObjectURL(file),
+      imgbbUrl: null,
+      uploading: true,
+      error: null,
+    };
+
+    state.uploadedImages.push(img);
+    renderImagePreviews();
+
+    uploadToImgbb(file)
+      .then(url => {
+        img.imgbbUrl = url;
+        img.uploading = false;
+        renderImagePreviews();
+      })
+      .catch(err => {
+        img.uploading = false;
+        img.error = err.message;
+        renderImagePreviews();
+        showToast(`图片 ${file.name} 上传失败: ${err.message}`, 'error');
+      });
+  });
+}
+
+function removeUploadedImage(id) {
+  const idx = state.uploadedImages.findIndex(img => img.id === id);
+  if (idx !== -1) {
+    if (state.uploadedImages[idx].previewUrl) {
+      URL.revokeObjectURL(state.uploadedImages[idx].previewUrl);
+    }
+    state.uploadedImages.splice(idx, 1);
+    renderImagePreviews();
+  }
+}
+
+function renderImagePreviews() {
+  if (state.uploadedImages.length === 0) {
+    dom.previewList.innerHTML = '';
+    dom.imageTip.style.display = 'none';
+    return;
+  }
+
+  dom.imageTip.style.display = 'block';
+
+  dom.previewList.innerHTML = state.uploadedImages.map((img, index) => `
+    <div class="img-preview-item ${img.uploading ? 'uploading' : ''} ${img.error ? 'error' : ''}">
+      <img src="${img.previewUrl}" alt="${escapeHtml(img.fileName)}" class="img-thumb" />
+      <div class="img-info">
+        <span class="img-name">${escapeHtml(img.fileName)}</span>
+        <span class="img-label">图片 ${index + 1}</span>
+        ${img.uploading ? '<span class="img-status uploading-text">上传中...</span>' : ''}
+        ${img.error ? `<span class="img-status error-text">${escapeHtml(img.error)}</span>` : ''}
+        ${img.imgbbUrl ? '<span class="img-status success-text">\u2713 已上传</span>' : ''}
+      </div>
+      <button class="img-remove-btn" data-id="${img.id}" title="移除">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+      </button>
+    </div>
+  `).join('');
+}
+
+function getUploadedImageUrls() {
+  return state.uploadedImages
+    .filter(img => img.imgbbUrl && !img.uploading && !img.error)
+    .map(img => img.imgbbUrl);
 }
 
 // ---- 提交任务 ----
@@ -159,11 +291,15 @@ async function submitTask() {
   const key = dom.keyInput.value.trim();
   const prompt = dom.promptInput.value.trim();
   const model = dom.modelSelect.value;
-  const images = getImageUrls();
+  const images = getUploadedImageUrls();
 
-  // 校验
   if (!key) return showToast('请输入 API Key', 'error');
   if (!prompt) return showToast('请输入提示词', 'error');
+
+  // 检查是否有图片还在上传中
+  if (state.uploadedImages.some(img => img.uploading)) {
+    return showToast('请等待图片上传完成', 'warning');
+  }
 
   dom.submitBtn.disabled = true;
   dom.submitBtn.classList.add('loading');
@@ -178,7 +314,6 @@ async function submitTask() {
       taskid: '',
     };
 
-    // images 只在有值时传
     if (images.length > 0) {
       body.images = images;
     }
@@ -195,7 +330,6 @@ async function submitTask() {
       throw new Error(json.msg || '任务提交失败');
     }
 
-    // 保存任务
     const task = {
       id: Date.now(),
       taskId: json.data.task_id,
@@ -218,6 +352,13 @@ async function submitTask() {
     // 清空提示词
     dom.promptInput.value = '';
     dom.charCount.textContent = '0';
+
+    // 清空已上传图片
+    state.uploadedImages.forEach(img => {
+      if (img.previewUrl) URL.revokeObjectURL(img.previewUrl);
+    });
+    state.uploadedImages = [];
+    renderImagePreviews();
 
   } catch (err) {
     showToast(err.message || '提交失败，请检查参数', 'error');
@@ -269,7 +410,6 @@ function startPolling(taskId) {
     }
   };
 
-  // 立即查一次
   poll();
   state.pollers[taskId] = setInterval(poll, POLL_INTERVAL);
 }
@@ -309,21 +449,17 @@ function updateTaskCard(taskId) {
   const card = document.querySelector(`[data-task-id="${taskId}"]`);
   if (!card) return renderTaskList();
 
-  // 更新状态 badge
   const statusBadge = card.querySelector('.task-status-badge');
   statusBadge.className = `task-status-badge ${task.status}`;
   statusBadge.innerHTML = `<span class="status-dot-badge"></span>${statusLabel(task.status)}`;
 
-  // 更新进度条
   const progressFill = card.querySelector('.task-progress-fill');
   progressFill.style.width = `${task.progress}%`;
   progressFill.className = `task-progress-fill ${task.status === 'running' ? 'running' : ''}`;
 
-  // 更新进度文字
   const progressText = card.querySelector('.progress-percent');
   progressText.textContent = `${task.progress}%`;
 
-  // 更新按钮
   const actionsContainer = card.querySelector('.task-actions');
   actionsContainer.innerHTML = buildTaskActionsHTML(task);
   bindTaskCardEvents();
@@ -486,7 +622,6 @@ function initParticles() {
       ctx.fill();
     }
 
-    // 连线
     for (let i = 0; i < particles.length; i++) {
       for (let j = i + 1; j < particles.length; j++) {
         const dx = particles[i].x - particles[j].x;
