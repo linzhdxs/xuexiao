@@ -87,7 +87,41 @@ function loadState() {
     if (key) dom.keyInput.value = key;
     const proxy = localStorage.getItem('video_gen_proxy');
     if (proxy) dom.proxyInput.value = proxy;
+
+    // 迁移旧版数据：旧版用固定 key "video_gen_tasks"，新版按 API Key 隔离
+    migrateOldTasks();
+
     loadTasksForCurrentKey();
+  } catch (e) { /* ignore */ }
+}
+
+function migrateOldTasks() {
+  try {
+    const oldRaw = localStorage.getItem('video_gen_tasks');
+    if (!oldRaw) return; // 没有旧数据，跳过
+
+    const oldTasks = JSON.parse(oldRaw);
+    if (!Array.isArray(oldTasks) || oldTasks.length === 0) {
+      localStorage.removeItem('video_gen_tasks');
+      return;
+    }
+
+    // 把旧数据合并到当前 key 的存储中
+    const newKey = getTasksStorageKey();
+    const existingRaw = localStorage.getItem(newKey);
+    const existing = existingRaw ? JSON.parse(existingRaw) : [];
+
+    // 去重合并（按 taskId）
+    const existingIds = new Set(existing.map(t => t.taskId));
+    const merged = [...existing];
+    for (const task of oldTasks) {
+      if (!existingIds.has(task.taskId)) {
+        merged.push(task);
+      }
+    }
+
+    localStorage.setItem(newKey, JSON.stringify(merged));
+    localStorage.removeItem('video_gen_tasks'); // 清除旧键
   } catch (e) { /* ignore */ }
 }
 
