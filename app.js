@@ -106,7 +106,21 @@ function loadState() {
   } catch {}
 }
 function migrateOldTasks() {
-  const sources = ['video_gen_tasks', 'video_gen_tasks_default', 'img_gen_tasks', 'img_gen_tasks_default', 'gen_tasks_default'];
+  const ik = dom.keyInput.value.trim();
+  const vk = dom.videoKeyInput.value.trim();
+  const hImg = ik ? hashKey(ik) : '';
+  // 固定旧键 + 各版本哈希键
+  const sources = [
+    'video_gen_tasks', 'video_gen_tasks_default',
+    'img_gen_tasks', 'img_gen_tasks_default',
+    'gen_tasks_default',
+  ];
+  if (hImg) {
+    sources.push('img_gen_tasks_' + hImg, 'video_gen_tasks_' + hImg);
+    // 旧版组合哈希残留数据
+    if (vk) sources.push('gen_tasks_' + hashKey(ik + '|' + vk));
+    sources.push('gen_tasks_' + hashKey(ik + '|'));
+  }
   const newKey = getTasksStorageKey();
   for (const src of sources) {
     if (src === newKey) continue;
@@ -182,12 +196,20 @@ function bindEvents() {
 
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeImageModal(); closeVideoModal(); closeVideoDialog(); } });
 
-  // Key 变更
-  dom.keyInput.addEventListener('change', () => {
-    localStorage.setItem('gen_key', dom.keyInput.value);
-    Object.keys(state.pollers).forEach(stopPolling);
-    loadTasksForCurrentKey(); renderTaskList(); resumePolling();
-  });
+  // 密钥变更 — input 事件 + 防抖，输入即触发
+  let _keyDebounce = null;
+  const reloadOnKeyChange = () => {
+    clearTimeout(_keyDebounce);
+    _keyDebounce = setTimeout(() => {
+      Object.keys(state.pollers).forEach(stopPolling);
+      saveState();
+      migrateOldTasks();
+      loadTasksForCurrentKey(); renderTaskList(); resumePolling();
+    }, 400);
+  };
+  dom.keyInput.addEventListener('input', reloadOnKeyChange);
+  dom.keyInput.addEventListener('change', reloadOnKeyChange);
+  dom.videoKeyInput.addEventListener('input', saveState);
   dom.videoKeyInput.addEventListener('change', saveState);
   dom.videoServer.addEventListener('change', saveState);
 }
@@ -250,35 +272,48 @@ function getUploadedImageUrls() {
 }
 
 // ======================= 图片生成 (PearAPI) =======================
+// Pro 模型不支持异步模式，需要走同步
+const SYNC_ONLY_MODELS = ['nano-banana-pro', 'nano-banana-pro-4k'];
+
 async function submitImageTask() {
   const key = dom.keyInput.value.trim();
   const prompt = dom.promptInput.value.trim();
+  const model = dom.modelSelect.value;
   if (!key) return showToast('请输入图片 API Key', 'error');
   if (!prompt) return showToast('请输入提示词', 'error');
   if (state.uploadedImages.some(x => x.uploading)) return showToast('请等待图片上传完成', 'warning');
 
   setSubmitLoading(dom.submitBtn, true, '生成中...');
   const images = getUploadedImageUrls();
+  const isSyncOnly = SYNC_ONLY_MODELS.includes(model);
+
   try {
-    const body = { prompt, model: dom.modelSelect.value, size: state.selectedSize, key, task_type: 'async' };
+    const body = { prompt, model, size: state.selectedSize, key };
+    if (!isSyncOnly) body.task_type = 'async';
     if (images.length) body.images = images;
+
     const resp = await fetch(IMAGE_API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const json = await resp.json();
-    if (json.code !== 200) throw new Error(json.msg || json.detail || '提交失败');
+    if (json.code !== 200) throw new Error(json.msg || json.detail || JSON.stringify(json));
 
     if (json.data?.task_id) {
-      const task = { type: 'image', id: Date.now(), taskId: json.data.task_id, status: json.data.status || 'queued', progress: json.data.progress || 0, model: json.data.model || dom.modelSelect.value, prompt, size: state.selectedSize, imageUrls: null, createdAt: now() };
+      const task = { type: 'image', id: Date.now(), taskId: json.data.task_id, status: json.data.status || 'queued', progress: json.data.progress || 0, model: json.data.model || model, prompt, size: state.selectedSize, imageUrls: null, createdAt: now() };
       state.tasks.unshift(task); saveState(); renderTaskList(); startImagePolling(task.taskId);
-      showToast('图片任务已提交', 'success');
+      showToast('图片任务已提交（异步）', 'success');
     } else if (json.data?.image_urls) {
-      const task = { type: 'image', id: Date.now(), taskId: 'sync_' + Date.now(), status: 'completed', progress: 100, model: dom.modelSelect.value, prompt, size: state.selectedSize, imageUrls: json.data.image_urls, createdAt: now() };
+      const task = { type: 'image', id: Date.now(), taskId: 'sync_' + Date.now(), status: 'completed', progress: 100, model, prompt, size: state.selectedSize, imageUrls: json.data.image_urls, createdAt: now() };
       state.tasks.unshift(task); saveState(); renderTaskList();
       showToast('图片生成成功！', 'success');
-    } else throw new Error('未知响应');
+    } else if (json.data?.image_url) {
+      // 某些模型返回单张 image_url 而非数组
+      const task = { type: 'image', id: Date.now(), taskId: 'sync_' + Date.now(), status: 'completed', progress: 100, model, prompt, size: state.selectedSize, imageUrls: [json.data.image_url], createdAt: now() };
+      state.tasks.unshift(task); saveState(); renderTaskList();
+      showToast('图片生成成功！', 'success');
+    } else throw new Error('未知响应: ' + JSON.stringify(json.data).slice(0, 200));
 
     dom.promptInput.value = ''; dom.charCount.textContent = '0';
     state.uploadedImages.forEach(x => URL.revokeObjectURL(x.previewUrl)); state.uploadedImages = []; renderImagePreviews();
-  } catch (e) { showToast(e.message, 'error'); }
+  } catch (e) { showToast(e.message, 'error'); console.error('Image gen error:', e); }
   finally { setSubmitLoading(dom.submitBtn, false, '生成图片'); }
 }
 
