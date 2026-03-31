@@ -1,54 +1,76 @@
 /* ============================================
-   AI 视频生成工作台 - 核心逻辑
+   AI 图片 / 视频 生成工作台 - 核心逻辑
    ============================================ */
 
-const API_DIRECT = 'https://api.pearktrue.cn/api/video_generate';
+const IMAGE_API = 'https://api.pearktrue.cn/api/image_generate';
 const IMGBB_KEY = 'c2d0c798539d2dab9107049c7f544d1d';
 const POLL_INTERVAL = 5000;
 
-function getApiUrl() {
-  const proxy = localStorage.getItem('video_gen_proxy') || '';
-  if (proxy) {
-    return proxy.replace(/\/+$/, '') + '/api/video_generate';
-  }
-  return API_DIRECT;
+// ---- 状态 ----
+const state = {
+  tasks: [],          // { type:'image'|'video', id, taskId, status, progress, model, prompt, ...extra }
+  pollers: {},
+  selectedSize: '16:9',
+  uploadedImages: [],
+  videoRefImageUrl: null, // 当前选中用于生成视频的图片
+};
+
+// ---- DOM ----
+const dom = {};
+function cacheDom() {
+  Object.assign(dom, {
+    // 图片 API
+    keyInput:       document.getElementById('input-key'),
+    toggleKey:      document.getElementById('btn-toggle-key'),
+    // 视频 API
+    videoKeyInput:  document.getElementById('input-video-key'),
+    toggleVideoKey: document.getElementById('btn-toggle-video-key'),
+    videoServer:    document.getElementById('select-video-server'),
+    // 图片生成控件
+    modelSelect:    document.getElementById('select-model'),
+    ratioGroup:     document.getElementById('ratio-group'),
+    dropZone:       document.getElementById('image-drop-zone'),
+    fileInput:      document.getElementById('image-file-input'),
+    previewList:    document.getElementById('image-preview-list'),
+    imageTip:       document.getElementById('image-tip'),
+    promptInput:    document.getElementById('input-prompt'),
+    charCount:      document.getElementById('char-count'),
+    submitBtn:      document.getElementById('btn-submit'),
+    openVideoBtn:   document.getElementById('btn-open-video-dialog'),
+    // 任务列表
+    taskList:       document.getElementById('task-list'),
+    taskCount:      document.getElementById('task-count'),
+    emptyState:     document.getElementById('empty-state'),
+    // 图片模态框
+    modalOverlay:   document.getElementById('modal-overlay'),
+    modalImage:     document.getElementById('modal-image'),
+    modalDownload:  document.getElementById('modal-download'),
+    modalClose:     document.getElementById('modal-close'),
+    // 视频模态框
+    videoModalOverlay: document.getElementById('video-modal-overlay'),
+    modalVideo:     document.getElementById('modal-video'),
+    videoModalDownload: document.getElementById('video-modal-download'),
+    videoModalClose: document.getElementById('video-modal-close'),
+    // 视频生成对话框
+    vdOverlay:      document.getElementById('vdialog-overlay'),
+    vdClose:        document.getElementById('vdialog-close'),
+    vdRefImg:       document.getElementById('vdialog-ref-img'),
+    vdModel:        document.getElementById('select-video-model'),
+    vdLength:       document.getElementById('select-video-length'),
+    vdRatio:        document.getElementById('select-video-ratio'),
+    vdPreset:       document.getElementById('select-video-preset'),
+    vdResolution:   document.getElementById('select-video-resolution'),
+    vdPrompt:       document.getElementById('input-video-prompt'),
+    vdSubmit:       document.getElementById('btn-submit-video'),
+    // 其他
+    toastContainer: document.getElementById('toast-container'),
+    canvas:         document.getElementById('particles-canvas'),
+  });
 }
 
-// ---- 状态管理 ----
-const state = {
-  tasks: [],
-  pollers: {},
-  selectedRatio: '16:9',
-  uploadedImages: [], // { id, fileName, previewUrl, imgbbUrl, uploading, error }
-};
-
-// ---- DOM 缓存 ----
-const dom = {
-  keyInput: document.getElementById('input-key'),
-  proxyInput: document.getElementById('input-proxy'),
-  toggleKey: document.getElementById('btn-toggle-key'),
-  modelSelect: document.getElementById('select-model'),
-  ratioGroup: document.getElementById('ratio-group'),
-  dropZone: document.getElementById('image-drop-zone'),
-  fileInput: document.getElementById('image-file-input'),
-  previewList: document.getElementById('image-preview-list'),
-  imageTip: document.getElementById('image-tip'),
-  promptInput: document.getElementById('input-prompt'),
-  charCount: document.getElementById('char-count'),
-  submitBtn: document.getElementById('btn-submit'),
-  taskList: document.getElementById('task-list'),
-  taskCount: document.getElementById('task-count'),
-  emptyState: document.getElementById('empty-state'),
-  toastContainer: document.getElementById('toast-container'),
-  modalOverlay: document.getElementById('modal-overlay'),
-  modalVideo: document.getElementById('modal-video'),
-  modalDownload: document.getElementById('modal-download'),
-  modalClose: document.getElementById('modal-close'),
-  canvas: document.getElementById('particles-canvas'),
-};
-
-// ---- 初始化 ----
+// ======================= 初始化 =======================
 function init() {
+  cacheDom();
   loadState();
   bindEvents();
   initParticles();
@@ -56,634 +78,477 @@ function init() {
   resumePolling();
 }
 
-// ---- API Key 哈希（用于隔离不同密钥的任务记录） ----
+// ======================= 存储 =======================
 function hashKey(key) {
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) {
-    hash = ((hash << 5) - hash) + key.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(36);
+  let h = 0;
+  for (let i = 0; i < key.length; i++) { h = ((h << 5) - h) + key.charCodeAt(i); h |= 0; }
+  return Math.abs(h).toString(36);
 }
-
 function getTasksStorageKey() {
-  const key = dom.keyInput.value.trim();
-  if (!key) return 'video_gen_tasks_default';
-  return 'video_gen_tasks_' + hashKey(key);
+  const k = dom.keyInput.value.trim();
+  return k ? 'gen_tasks_' + hashKey(k) : 'gen_tasks_default';
 }
-
-// ---- 本地持久化 ----
 function saveState() {
   try {
-    localStorage.setItem('video_gen_key', dom.keyInput.value);
-    localStorage.setItem('video_gen_proxy', dom.proxyInput.value.trim());
+    localStorage.setItem('gen_key', dom.keyInput.value);
+    localStorage.setItem('gen_video_key', dom.videoKeyInput.value);
+    localStorage.setItem('gen_video_server', dom.videoServer.value);
     localStorage.setItem(getTasksStorageKey(), JSON.stringify(state.tasks));
-  } catch (e) { /* ignore */ }
+  } catch {}
 }
-
 function loadState() {
   try {
-    const key = localStorage.getItem('video_gen_key');
-    if (key) dom.keyInput.value = key;
-    const proxy = localStorage.getItem('video_gen_proxy');
-    if (proxy) dom.proxyInput.value = proxy;
-
-    // 迁移旧版数据：旧版用固定 key "video_gen_tasks"，新版按 API Key 隔离
+    const k = localStorage.getItem('gen_key'); if (k) dom.keyInput.value = k;
+    const vk = localStorage.getItem('gen_video_key'); if (vk) dom.videoKeyInput.value = vk;
+    const vs = localStorage.getItem('gen_video_server'); if (vs) dom.videoServer.value = vs;
     migrateOldTasks();
-
     loadTasksForCurrentKey();
-  } catch (e) { /* ignore */ }
+  } catch {}
 }
-
 function migrateOldTasks() {
-  try {
-    const oldRaw = localStorage.getItem('video_gen_tasks');
-    if (!oldRaw) return; // 没有旧数据，跳过
-
-    const oldTasks = JSON.parse(oldRaw);
-    if (!Array.isArray(oldTasks) || oldTasks.length === 0) {
-      localStorage.removeItem('video_gen_tasks');
-      return;
-    }
-
-    // 把旧数据合并到当前 key 的存储中
-    const newKey = getTasksStorageKey();
-    const existingRaw = localStorage.getItem(newKey);
-    const existing = existingRaw ? JSON.parse(existingRaw) : [];
-
-    // 去重合并（按 taskId）
-    const existingIds = new Set(existing.map(t => t.taskId));
-    const merged = [...existing];
-    for (const task of oldTasks) {
-      if (!existingIds.has(task.taskId)) {
-        merged.push(task);
-      }
-    }
-
+  const sources = ['video_gen_tasks', 'video_gen_tasks_default', 'img_gen_tasks', 'img_gen_tasks_default', 'gen_tasks_default'];
+  const newKey = getTasksStorageKey();
+  for (const src of sources) {
+    if (src === newKey) continue;
+    const raw = localStorage.getItem(src);
+    if (!raw) continue;
+    let old; try { old = JSON.parse(raw); } catch { continue; }
+    if (!Array.isArray(old) || !old.length) { localStorage.removeItem(src); continue; }
+    const existRaw = localStorage.getItem(newKey);
+    const exist = existRaw ? JSON.parse(existRaw) : [];
+    const ids = new Set(exist.map(t => t.taskId));
+    const merged = [...exist];
+    for (const t of old) { if (t.taskId && !ids.has(t.taskId)) { merged.push(t); ids.add(t.taskId); } }
     localStorage.setItem(newKey, JSON.stringify(merged));
-    localStorage.removeItem('video_gen_tasks'); // 清除旧键
-  } catch (e) { /* ignore */ }
-}
-
-function loadTasksForCurrentKey() {
-  try {
-    const raw = localStorage.getItem(getTasksStorageKey());
-    state.tasks = raw ? JSON.parse(raw) : [];
-  } catch (e) {
-    state.tasks = [];
+    localStorage.removeItem(src);
   }
 }
-
-// ---- 事件绑定 ----
-function bindEvents() {
-  // Key 显隐
-  dom.toggleKey.addEventListener('click', () => {
-    dom.keyInput.type = dom.keyInput.type === 'password' ? 'text' : 'password';
-  });
-
-  // 字数统计
-  dom.promptInput.addEventListener('input', () => {
-    dom.charCount.textContent = dom.promptInput.value.length;
-  });
-
-  // 画面比例
-  dom.ratioGroup.addEventListener('click', (e) => {
-    const btn = e.target.closest('.ratio-btn');
-    if (!btn) return;
-    dom.ratioGroup.querySelectorAll('.ratio-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    state.selectedRatio = btn.dataset.ratio;
-  });
-
-  // ---- 图片拖拽上传 ----
-  dom.dropZone.addEventListener('click', () => dom.fileInput.click());
-
-  dom.fileInput.addEventListener('change', (e) => {
-    handleFiles(e.target.files);
-    dom.fileInput.value = ''; // 允许重复选择同名文件
-  });
-
-  dom.dropZone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    dom.dropZone.classList.add('dragover');
-  });
-
-  dom.dropZone.addEventListener('dragleave', () => {
-    dom.dropZone.classList.remove('dragover');
-  });
-
-  dom.dropZone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dom.dropZone.classList.remove('dragover');
-    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
-    if (files.length) handleFiles(files);
-  });
-
-  // 图片预览列表 - 事件委托（删除）
-  dom.previewList.addEventListener('click', (e) => {
-    const btn = e.target.closest('.img-remove-btn');
-    if (!btn) return;
-    const id = parseFloat(btn.dataset.id);
-    removeUploadedImage(id);
-  });
-
-  // 提交
-  dom.submitBtn.addEventListener('click', submitTask);
-
-  // 模态框
-  dom.modalClose.addEventListener('click', closeModal);
-  dom.modalOverlay.addEventListener('click', (e) => {
-    if (e.target === dom.modalOverlay) closeModal();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeModal();
-  });
-
-  // Key 变更 → 切换任务记录
-  dom.keyInput.addEventListener('change', () => {
-    localStorage.setItem('video_gen_key', dom.keyInput.value);
-    // 停掉当前所有轮询
-    Object.keys(state.pollers).forEach(stopPolling);
-    // 加载新 key 对应的任务
-    loadTasksForCurrentKey();
-    renderTaskList();
-    resumePolling();
-  });
-
-  dom.proxyInput.addEventListener('change', saveState);
+function loadTasksForCurrentKey() {
+  try { const r = localStorage.getItem(getTasksStorageKey()); state.tasks = r ? JSON.parse(r) : []; } catch { state.tasks = []; }
 }
 
-// ---- imgbb 上传 ----
+// ======================= 事件绑定 =======================
+function bindEvents() {
+  // Key 显隐
+  dom.toggleKey.addEventListener('click', () => { dom.keyInput.type = dom.keyInput.type === 'password' ? 'text' : 'password'; });
+  dom.toggleVideoKey.addEventListener('click', () => { dom.videoKeyInput.type = dom.videoKeyInput.type === 'password' ? 'text' : 'password'; });
+
+  // 字数
+  dom.promptInput.addEventListener('input', () => { dom.charCount.textContent = dom.promptInput.value.length; });
+
+  // 图片尺寸
+  dom.ratioGroup.addEventListener('click', (e) => {
+    const btn = e.target.closest('.ratio-btn'); if (!btn) return;
+    dom.ratioGroup.querySelectorAll('.ratio-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.selectedSize = btn.dataset.ratio;
+  });
+
+  // 图片拖拽
+  dom.dropZone.addEventListener('click', () => dom.fileInput.click());
+  dom.fileInput.addEventListener('change', (e) => { handleFiles(e.target.files); dom.fileInput.value = ''; });
+  dom.dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dom.dropZone.classList.add('dragover'); });
+  dom.dropZone.addEventListener('dragleave', () => dom.dropZone.classList.remove('dragover'));
+  dom.dropZone.addEventListener('drop', (e) => {
+    e.preventDefault(); dom.dropZone.classList.remove('dragover');
+    const f = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+    if (f.length) handleFiles(f);
+  });
+  dom.previewList.addEventListener('click', (e) => {
+    const btn = e.target.closest('.img-remove-btn');
+    if (btn) removeUploadedImage(parseFloat(btn.dataset.id));
+  });
+
+  // 生成图片 / 生成视频
+  dom.submitBtn.addEventListener('click', submitImageTask);
+  dom.openVideoBtn.addEventListener('click', () => {
+    // 如果有已上传的参考图，用第一张；否则无图直接开
+    const urls = getUploadedImageUrls();
+    openVideoDialog(urls.length ? urls[0] : null);
+  });
+
+  // 图片模态框
+  dom.modalClose.addEventListener('click', closeImageModal);
+  dom.modalOverlay.addEventListener('click', (e) => { if (e.target === dom.modalOverlay) closeImageModal(); });
+
+  // 视频模态框
+  dom.videoModalClose.addEventListener('click', closeVideoModal);
+  dom.videoModalOverlay.addEventListener('click', (e) => { if (e.target === dom.videoModalOverlay) closeVideoModal(); });
+
+  // 视频生成对话框
+  dom.vdClose.addEventListener('click', closeVideoDialog);
+  dom.vdOverlay.addEventListener('click', (e) => { if (e.target === dom.vdOverlay) closeVideoDialog(); });
+  dom.vdSubmit.addEventListener('click', submitVideoTask);
+
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeImageModal(); closeVideoModal(); closeVideoDialog(); } });
+
+  // Key 变更
+  dom.keyInput.addEventListener('change', () => {
+    localStorage.setItem('gen_key', dom.keyInput.value);
+    Object.keys(state.pollers).forEach(stopPolling);
+    loadTasksForCurrentKey(); renderTaskList(); resumePolling();
+  });
+  dom.videoKeyInput.addEventListener('change', saveState);
+  dom.videoServer.addEventListener('change', saveState);
+}
+
+// ======================= ImgBB 上传 =======================
 async function uploadToImgbb(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = async () => {
       try {
-        const base64 = reader.result.split(',')[1];
-        const formData = new FormData();
-        formData.append('key', IMGBB_KEY);
-        formData.append('image', base64);
-        formData.append('name', file.name.replace(/\.[^.]+$/, ''));
-
-        const resp = await fetch('https://api.imgbb.com/1/upload', {
-          method: 'POST',
-          body: formData,
-        });
-        const json = await resp.json();
-
-        if (json.success && json.data?.url) {
-          resolve(json.data.url);
-        } else {
-          reject(new Error(json.error?.message || '图片上传失败'));
-        }
-      } catch (err) {
-        reject(err);
-      }
+        const b64 = reader.result.split(',')[1];
+        const fd = new FormData(); fd.append('key', IMGBB_KEY); fd.append('image', b64);
+        const r = await fetch('https://api.imgbb.com/1/upload', { method: 'POST', body: fd });
+        const j = await r.json();
+        j.success && j.data?.url ? resolve(j.data.url) : reject(new Error(j.error?.message || '上传失败'));
+      } catch (e) { reject(e); }
     };
     reader.onerror = () => reject(new Error('读取文件失败'));
     reader.readAsDataURL(file);
   });
 }
 
-// ---- 图片处理 ----
+// ======================= 图片处理 =======================
 function handleFiles(files) {
-  Array.from(files).forEach(file => {
-    if (!file.type.startsWith('image/')) return;
-
-    const img = {
-      id: Date.now() + Math.random(),
-      fileName: file.name,
-      previewUrl: URL.createObjectURL(file),
-      imgbbUrl: null,
-      uploading: true,
-      error: null,
-    };
-
+  const remaining = 8 - state.uploadedImages.length;
+  if (remaining <= 0) { showToast('最多支持 8 张参考图片', 'warning'); return; }
+  const list = Array.from(files).filter(f => f.type.startsWith('image/')).slice(0, remaining);
+  if (list.length < files.length) showToast(`仅上传前 ${list.length} 张`, 'warning');
+  list.forEach(file => {
+    const img = { id: Date.now() + Math.random(), fileName: file.name, previewUrl: URL.createObjectURL(file), imgbbUrl: null, uploading: true, error: null };
     state.uploadedImages.push(img);
     renderImagePreviews();
-
     uploadToImgbb(file)
-      .then(url => {
-        img.imgbbUrl = url;
-        img.uploading = false;
-        renderImagePreviews();
-      })
-      .catch(err => {
-        img.uploading = false;
-        img.error = err.message;
-        renderImagePreviews();
-        showToast(`图片 ${file.name} 上传失败: ${err.message}`, 'error');
-      });
+      .then(url => { img.imgbbUrl = url; img.uploading = false; renderImagePreviews(); })
+      .catch(err => { img.uploading = false; img.error = err.message; renderImagePreviews(); showToast(`${file.name} 上传失败`, 'error'); });
   });
 }
-
 function removeUploadedImage(id) {
-  const idx = state.uploadedImages.findIndex(img => img.id === id);
-  if (idx !== -1) {
-    if (state.uploadedImages[idx].previewUrl) {
-      URL.revokeObjectURL(state.uploadedImages[idx].previewUrl);
-    }
-    state.uploadedImages.splice(idx, 1);
-    renderImagePreviews();
-  }
+  const i = state.uploadedImages.findIndex(x => x.id === id);
+  if (i !== -1) { URL.revokeObjectURL(state.uploadedImages[i].previewUrl); state.uploadedImages.splice(i, 1); renderImagePreviews(); }
 }
-
 function renderImagePreviews() {
-  if (state.uploadedImages.length === 0) {
-    dom.previewList.innerHTML = '';
-    dom.imageTip.style.display = 'none';
-    return;
-  }
-
+  if (!state.uploadedImages.length) { dom.previewList.innerHTML = ''; dom.imageTip.style.display = 'none'; return; }
   dom.imageTip.style.display = 'block';
-
-  dom.previewList.innerHTML = state.uploadedImages.map((img, index) => `
+  dom.previewList.innerHTML = state.uploadedImages.map((img, i) => `
     <div class="img-preview-item ${img.uploading ? 'uploading' : ''} ${img.error ? 'error' : ''}">
-      <img src="${img.previewUrl}" alt="${escapeHtml(img.fileName)}" class="img-thumb" />
+      <img src="${img.previewUrl}" alt="${esc(img.fileName)}" class="img-thumb" />
       <div class="img-info">
-        <span class="img-name">${escapeHtml(img.fileName)}</span>
-        <span class="img-label">图片 ${index + 1}</span>
+        <span class="img-name">${esc(img.fileName)}</span>
+        <span class="img-label">图片 ${i + 1}</span>
         ${img.uploading ? '<span class="img-status uploading-text">上传中...</span>' : ''}
-        ${img.error ? `<span class="img-status error-text">${escapeHtml(img.error)}</span>` : ''}
-        ${img.imgbbUrl ? '<span class="img-status success-text">\u2713 已上传</span>' : ''}
+        ${img.error ? `<span class="img-status error-text">${esc(img.error)}</span>` : ''}
+        ${img.imgbbUrl ? '<span class="img-status success-text">✓ 已上传</span>' : ''}
       </div>
-      <button class="img-remove-btn" data-id="${img.id}" title="移除">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-      </button>
-    </div>
-  `).join('');
+      <button class="img-remove-btn" data-id="${img.id}" title="移除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg></button>
+    </div>`).join('');
 }
-
 function getUploadedImageUrls() {
-  return state.uploadedImages
-    .filter(img => img.imgbbUrl && !img.uploading && !img.error)
-    .map(img => img.imgbbUrl);
+  return state.uploadedImages.filter(x => x.imgbbUrl && !x.uploading && !x.error).map(x => x.imgbbUrl);
 }
 
-// ---- 提交任务 ----
-async function submitTask() {
+// ======================= 图片生成 (PearAPI) =======================
+async function submitImageTask() {
   const key = dom.keyInput.value.trim();
   const prompt = dom.promptInput.value.trim();
-  const model = dom.modelSelect.value;
-  const images = getUploadedImageUrls();
-
-  if (!key) return showToast('请输入 API Key', 'error');
+  if (!key) return showToast('请输入图片 API Key', 'error');
   if (!prompt) return showToast('请输入提示词', 'error');
+  if (state.uploadedImages.some(x => x.uploading)) return showToast('请等待图片上传完成', 'warning');
 
-  // 检查是否有图片还在上传中
-  if (state.uploadedImages.some(img => img.uploading)) {
-    return showToast('请等待图片上传完成', 'warning');
-  }
-
-  dom.submitBtn.disabled = true;
-  dom.submitBtn.classList.add('loading');
-  dom.submitBtn.querySelector('span').textContent = '提交中...';
-
+  setSubmitLoading(dom.submitBtn, true, '生成中...');
+  const images = getUploadedImageUrls();
   try {
-    const body = {
-      prompt,
-      model,
-      aspect_ratio: state.selectedRatio,
-      key,
-      taskid: '',
-    };
-
-    if (images.length > 0) {
-      body.images = images;
-    }
-
-    const resp = await fetch(getApiUrl(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
+    const body = { prompt, model: dom.modelSelect.value, size: state.selectedSize, key, task_type: 'async' };
+    if (images.length) body.images = images;
+    const resp = await fetch(IMAGE_API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const json = await resp.json();
+    if (json.code !== 200) throw new Error(json.msg || json.detail || '提交失败');
 
-    if (json.code !== 200 || !json.data?.task_id) {
-      throw new Error(json.msg || '任务提交失败');
-    }
+    if (json.data?.task_id) {
+      const task = { type: 'image', id: Date.now(), taskId: json.data.task_id, status: json.data.status || 'queued', progress: json.data.progress || 0, model: json.data.model || dom.modelSelect.value, prompt, size: state.selectedSize, imageUrls: null, createdAt: now() };
+      state.tasks.unshift(task); saveState(); renderTaskList(); startImagePolling(task.taskId);
+      showToast('图片任务已提交', 'success');
+    } else if (json.data?.image_urls) {
+      const task = { type: 'image', id: Date.now(), taskId: 'sync_' + Date.now(), status: 'completed', progress: 100, model: dom.modelSelect.value, prompt, size: state.selectedSize, imageUrls: json.data.image_urls, createdAt: now() };
+      state.tasks.unshift(task); saveState(); renderTaskList();
+      showToast('图片生成成功！', 'success');
+    } else throw new Error('未知响应');
 
-    const task = {
-      id: Date.now(),
-      taskId: json.data.task_id,
-      status: json.data.status || 'queued',
-      progress: json.data.progress || 0,
-      model: json.data.model || model,
-      prompt,
-      ratio: state.selectedRatio,
-      videoUrl: null,
-      createdAt: new Date().toLocaleString('zh-CN'),
-    };
-
-    state.tasks.unshift(task);
-    saveState();
-    renderTaskList();
-    startPolling(task.taskId);
-
-    showToast('任务提交成功，开始生成...', 'success');
-
-    // 清空提示词
-    dom.promptInput.value = '';
-    dom.charCount.textContent = '0';
-
-    // 清空已上传图片
-    state.uploadedImages.forEach(img => {
-      if (img.previewUrl) URL.revokeObjectURL(img.previewUrl);
-    });
-    state.uploadedImages = [];
-    renderImagePreviews();
-
-  } catch (err) {
-    showToast(err.message || '提交失败，请检查参数', 'error');
-  } finally {
-    dom.submitBtn.disabled = false;
-    dom.submitBtn.classList.remove('loading');
-    dom.submitBtn.querySelector('span').textContent = '提交生成任务';
-  }
+    dom.promptInput.value = ''; dom.charCount.textContent = '0';
+    state.uploadedImages.forEach(x => URL.revokeObjectURL(x.previewUrl)); state.uploadedImages = []; renderImagePreviews();
+  } catch (e) { showToast(e.message, 'error'); }
+  finally { setSubmitLoading(dom.submitBtn, false, '生成图片'); }
 }
 
-// ---- 轮询任务 ----
-function startPolling(taskId) {
+// ---- 图片任务轮询 ----
+function startImagePolling(taskId) {
   if (state.pollers[taskId]) return;
-
   const poll = async () => {
-    const key = dom.keyInput.value.trim();
-    if (!key) return;
-
+    const key = dom.keyInput.value.trim(); if (!key) return;
     try {
-      const resp = await fetch(getApiUrl(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key, taskid: taskId }),
-      });
-      const json = await resp.json();
-
-      if (json.code === 200 && json.data) {
-        const task = state.tasks.find(t => t.taskId === taskId);
-        if (!task) return stopPolling(taskId);
-
-        task.status = json.data.status;
-        task.progress = json.data.progress || 0;
-
-        if (json.data.status === 'completed') {
-          task.videoUrl = json.data.api_file_url || null;
-          task.progress = 100;
-          stopPolling(taskId);
-          showToast(`视频生成完成！模型: ${task.model}`, 'success');
-        } else if (json.data.status === 'failed') {
-          stopPolling(taskId);
-          showToast(`任务失败: ${taskId.slice(0, 8)}...`, 'error');
-        }
-
-        saveState();
-        updateTaskCard(taskId);
+      const r = await fetch(IMAGE_API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, task_id: taskId }) });
+      const j = await r.json();
+      if (j.code === 200 && j.data) {
+        const t = state.tasks.find(x => x.taskId === taskId); if (!t) return stopPolling(taskId);
+        t.status = j.data.status || t.status; t.progress = j.data.progress || t.progress;
+        if (j.data.status === 'completed') { t.imageUrls = j.data.image_urls; t.progress = 100; stopPolling(taskId); showToast('图片生成完成！', 'success'); }
+        if (j.data.status === 'failed') { stopPolling(taskId); showToast('图片任务失败', 'error'); }
+        saveState(); updateTaskCard(taskId);
       }
-    } catch (err) {
-      console.error('Poll error:', err);
-    }
+    } catch {}
   };
-
-  poll();
-  state.pollers[taskId] = setInterval(poll, POLL_INTERVAL);
+  poll(); state.pollers[taskId] = setInterval(poll, POLL_INTERVAL);
 }
-
-function stopPolling(taskId) {
-  if (state.pollers[taskId]) {
-    clearInterval(state.pollers[taskId]);
-    delete state.pollers[taskId];
-  }
-}
-
+function stopPolling(id) { if (state.pollers[id]) { clearInterval(state.pollers[id]); delete state.pollers[id]; } }
 function resumePolling() {
-  state.tasks.forEach(task => {
-    if (task.status === 'queued' || task.status === 'running') {
-      startPolling(task.taskId);
-    }
+  state.tasks.forEach(t => {
+    if (t.type === 'image' && (t.status === 'queued' || t.status === 'running')) startImagePolling(t.taskId);
+    // 视频任务是 SSE 流式的，不需要轮询恢复（刷新页面后 SSE 连接已断）
   });
 }
 
-// ---- 渲染任务列表 ----
-function renderTaskList() {
-  if (state.tasks.length === 0) {
-    dom.emptyState.style.display = 'flex';
-    dom.taskList.innerHTML = '';
+// ======================= 视频生成 (Grok SSE) =======================
+function openVideoDialog(imageUrl) {
+  state.videoRefImageUrl = imageUrl;
+  if (imageUrl) {
+    dom.vdRefImg.src = imageUrl;
+    dom.vdRefImg.parentElement.style.display = '';
+    dom.vdPrompt.value = '图片中的人物动起来';
   } else {
-    dom.emptyState.style.display = 'none';
-    dom.taskList.innerHTML = state.tasks.map(task => buildTaskCardHTML(task)).join('');
-    bindTaskCardEvents();
+    dom.vdRefImg.src = '';
+    dom.vdRefImg.parentElement.style.display = 'none';
+    dom.vdPrompt.value = '';
   }
+  dom.vdOverlay.classList.add('active');
+}
+function closeVideoDialog() { dom.vdOverlay.classList.remove('active'); }
+
+async function submitVideoTask() {
+  const videoKey = dom.videoKeyInput.value.trim();
+  const prompt = dom.vdPrompt.value.trim();
+  if (!videoKey) return showToast('请输入视频 API Key', 'error');
+  if (!prompt) return showToast('请输入视频提示词', 'error');
+
+  const server = dom.videoServer.value;
+  const model = dom.vdModel.value;
+  const imageUrl = state.videoRefImageUrl;
+
+  // 构造 messages
+  const content = [{ type: 'text', text: prompt }];
+  if (imageUrl) content.push({ type: 'image_url', image_url: { url: imageUrl } });
+
+  const body = {
+    model,
+    messages: [{ role: 'user', content }],
+    video_config: {
+      video_length: dom.vdLength.value,
+      aspect_ratio: dom.vdRatio.value,
+      preset: dom.vdPreset.value,
+      resolution_name: dom.vdResolution.value,
+    },
+  };
+
+  // 创建任务
+  const task = {
+    type: 'video', id: Date.now(), taskId: 'vid_' + Date.now(),
+    status: 'running', progress: 0, model, prompt,
+    videoUrl: null, imageRef: imageUrl,
+    videoLength: dom.vdLength.value, videoRatio: dom.vdRatio.value,
+    createdAt: now(),
+  };
+  state.tasks.unshift(task); saveState(); renderTaskList();
+  closeVideoDialog();
+
+  setSubmitLoading(dom.vdSubmit, true, '生成中...');
+  try {
+    const resp = await fetch(`${server}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${videoKey}` },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 200)}`);
+    }
+
+    // SSE 流式解析
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let fullContent = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const data = trimmed.slice(5).trim();
+        if (data === '[DONE]') continue;
+        try {
+          const json = JSON.parse(data);
+          const delta = json.choices?.[0]?.delta?.content || '';
+          fullContent += delta;
+
+          // 解析进度
+          const pm = delta.match(/当前进度(\d+)%/);
+          if (pm) { task.progress = parseInt(pm[1]); updateTaskCard(task.taskId); }
+
+          // 结束
+          if (json.choices?.[0]?.finish_reason === 'stop') {
+            const urlMatch = fullContent.match(/https?:\/\/[^\s"'<>]+\.mp4/);
+            if (urlMatch) { task.videoUrl = urlMatch[0]; task.status = 'completed'; task.progress = 100; }
+            else { task.status = 'failed'; }
+            saveState(); updateTaskCard(task.taskId);
+          }
+        } catch {}
+      }
+    }
+
+    // 最终检查
+    if (task.status !== 'completed' && task.status !== 'failed') {
+      const urlMatch = fullContent.match(/https?:\/\/[^\s"'<>]+\.mp4/);
+      if (urlMatch) { task.videoUrl = urlMatch[0]; task.status = 'completed'; task.progress = 100; }
+      else { task.status = 'failed'; }
+      saveState(); updateTaskCard(task.taskId);
+    }
+
+    showToast(task.status === 'completed' ? '视频生成完成！' : '视频生成失败', task.status === 'completed' ? 'success' : 'error');
+  } catch (e) {
+    task.status = 'failed'; saveState(); updateTaskCard(task.taskId);
+    showToast(e.message || '视频生成失败', 'error');
+  } finally {
+    setSubmitLoading(dom.vdSubmit, false, '开始生成视频');
+  }
+}
+
+// ======================= 渲染任务列表 =======================
+function renderTaskList() {
+  if (!state.tasks.length) { dom.emptyState.style.display = 'flex'; dom.taskList.innerHTML = ''; }
+  else { dom.emptyState.style.display = 'none'; dom.taskList.innerHTML = state.tasks.map(buildTaskCard).join(''); }
   dom.taskCount.textContent = `${state.tasks.length} 个任务`;
+  bindTaskEvents();
 }
 
 function updateTaskCard(taskId) {
-  const task = state.tasks.find(t => t.taskId === taskId);
-  if (!task) return;
-
+  const t = state.tasks.find(x => x.taskId === taskId);
+  if (!t) return;
   const card = document.querySelector(`[data-task-id="${taskId}"]`);
   if (!card) return renderTaskList();
-
-  const statusBadge = card.querySelector('.task-status-badge');
-  statusBadge.className = `task-status-badge ${task.status}`;
-  statusBadge.innerHTML = `<span class="status-dot-badge"></span>${statusLabel(task.status)}`;
-
-  const progressFill = card.querySelector('.task-progress-fill');
-  progressFill.style.width = `${task.progress}%`;
-  progressFill.className = `task-progress-fill ${task.status === 'running' ? 'running' : ''}`;
-
-  const progressText = card.querySelector('.progress-percent');
-  progressText.textContent = `${task.progress}%`;
-
-  const actionsContainer = card.querySelector('.task-actions');
-  actionsContainer.innerHTML = buildTaskActionsHTML(task);
-  bindTaskCardEvents();
+  card.outerHTML = buildTaskCard(t);
+  bindTaskEvents();
 }
 
-function statusLabel(status) {
-  const map = { queued: '排队中', running: '生成中', completed: '已完成', failed: '失败' };
-  return map[status] || status;
-}
+function buildTaskCard(t) {
+  const isVideo = t.type === 'video';
+  const badge = isVideo ? '🎬 视频' : '🖼️ 图片';
+  const statusText = { queued: '排队中', running: '生成中', completed: '已完成', failed: '失败' }[t.status] || t.status;
 
-function buildTaskCardHTML(task) {
+  let mediaHTML = '';
+  if (isVideo && t.status === 'completed' && t.videoUrl) {
+    mediaHTML = `<div class="task-video-area"><video src="${t.videoUrl}" class="task-video-thumb" muted data-action="play-video" data-url="${t.videoUrl}" title="点击播放"></video></div>`;
+  } else if (!isVideo && t.imageUrls?.length) {
+    mediaHTML = `<div class="task-thumb-area">${t.imageUrls.map((u, i) => `<img src="${u}" alt="图片${i+1}" class="task-thumb" data-action="preview-image" data-url="${u}" title="点击预览" />`).join('')}</div>`;
+  }
+  if (isVideo && t.imageRef) {
+    mediaHTML = `<div class="task-ref-badge"><img src="${t.imageRef}" class="task-ref-mini" alt="参考图" /><span>参考图</span></div>` + mediaHTML;
+  }
+
+  let actionsHTML = '';
+  if (!isVideo && t.status === 'completed' && t.imageUrls?.length) {
+    actionsHTML += t.imageUrls.map((u, i) => `
+      <button class="btn-task-action" data-action="gen-video" data-url="${u}" title="用此图生成视频">🎬 生成视频</button>
+    `).join('');
+    actionsHTML += `<button class="btn-task-action primary" data-action="preview-image" data-url="${t.imageUrls[0]}">👁 查看</button>`;
+  }
+  if (isVideo && t.status === 'completed' && t.videoUrl) {
+    actionsHTML += `<button class="btn-task-action primary" data-action="play-video" data-url="${t.videoUrl}">▶ 播放</button>`;
+  }
+  actionsHTML += `<button class="btn-task-action" data-action="delete" data-task-id="${t.taskId}">🗑 删除</button>`;
+
   return `
-    <div class="task-card" data-task-id="${task.taskId}">
+    <div class="task-card ${isVideo ? 'video-task' : 'image-task'}" data-task-id="${t.taskId}">
       <div class="task-card-header">
-        <span class="task-model-badge">${task.model}</span>
-        <span class="task-status-badge ${task.status}">
-          <span class="status-dot-badge"></span>
-          ${statusLabel(task.status)}
-        </span>
+        <span class="task-type-badge ${isVideo ? 'type-video' : 'type-image'}">${badge}</span>
+        <span class="task-model-badge">${t.model}</span>
+        <span class="task-status-badge ${t.status}"><span class="status-dot-badge"></span>${statusText}</span>
       </div>
-      <p class="task-prompt">${escapeHtml(task.prompt)}</p>
-      <div class="task-progress-bar">
-        <div class="task-progress-fill ${task.status === 'running' ? 'running' : ''}" style="width: ${task.progress}%"></div>
-      </div>
+      <p class="task-prompt">${esc(t.prompt)}</p>
+      ${mediaHTML}
+      <div class="task-progress-bar"><div class="task-progress-fill ${t.status === 'running' ? 'running' : ''}" style="width:${t.progress}%"></div></div>
       <div class="task-progress-info">
-        <span>${task.ratio} · ${task.createdAt}</span>
-        <span class="progress-percent">${task.progress}%</span>
+        <span>${isVideo ? (t.videoLength||'')+'秒 ' : (t.size||'')+' · '}${t.createdAt}</span>
+        <span class="progress-percent">${t.progress}%</span>
       </div>
       <div class="task-card-footer">
-        <span class="task-id" title="${task.taskId}">${task.taskId}</span>
-        <div class="task-actions">
-          ${buildTaskActionsHTML(task)}
-        </div>
+        <span class="task-id" title="${t.taskId}">${t.taskId}</span>
+        <div class="task-actions">${actionsHTML}</div>
       </div>
-    </div>
-  `;
+    </div>`;
 }
 
-function buildTaskActionsHTML(task) {
-  let html = '';
-  if (task.status === 'completed' && task.videoUrl) {
-    html += `
-      <button class="btn-task-action primary" data-action="preview" data-url="${task.videoUrl}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-        预览
-      </button>
-    `;
-  }
-  html += `
-    <button class="btn-task-action" data-action="delete" data-task-id="${task.taskId}">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" /></svg>
-      删除
-    </button>
-  `;
-  return html;
-}
-
-function bindTaskCardEvents() {
-  document.querySelectorAll('.btn-task-action').forEach(btn => {
-    btn.onclick = (e) => {
+function bindTaskEvents() {
+  document.querySelectorAll('[data-action]').forEach(el => {
+    el.onclick = (e) => {
       e.stopPropagation();
-      const action = btn.dataset.action;
-      if (action === 'preview') {
-        openModal(btn.dataset.url);
-      } else if (action === 'delete') {
-        deleteTask(btn.dataset.taskId);
-      }
+      const a = el.dataset.action;
+      if (a === 'preview-image') openImageModal(el.dataset.url);
+      else if (a === 'play-video') openVideoModal(el.dataset.url);
+      else if (a === 'gen-video') openVideoDialog(el.dataset.url);
+      else if (a === 'delete') deleteTask(el.dataset.taskId);
     };
   });
 }
 
-function deleteTask(taskId) {
-  stopPolling(taskId);
-  state.tasks = state.tasks.filter(t => t.taskId !== taskId);
-  saveState();
-  renderTaskList();
-  showToast('任务已删除', 'info');
-}
+function deleteTask(id) { stopPolling(id); state.tasks = state.tasks.filter(t => t.taskId !== id); saveState(); renderTaskList(); showToast('已删除', 'info'); }
 
-// ---- 模态框 ----
-function openModal(url) {
-  dom.modalVideo.src = url;
-  dom.modalDownload.href = url;
-  dom.modalOverlay.classList.add('active');
-}
+// ======================= 模态框 =======================
+function openImageModal(url) { dom.modalImage.src = url; dom.modalDownload.href = url; dom.modalOverlay.classList.add('active'); }
+function closeImageModal() { dom.modalOverlay.classList.remove('active'); dom.modalImage.src = ''; }
+function openVideoModal(url) { dom.modalVideo.src = url; dom.videoModalDownload.href = url; dom.videoModalOverlay.classList.add('active'); }
+function closeVideoModal() { dom.videoModalOverlay.classList.remove('active'); dom.modalVideo.pause(); dom.modalVideo.src = ''; }
 
-function closeModal() {
-  dom.modalOverlay.classList.remove('active');
-  dom.modalVideo.pause();
-  dom.modalVideo.src = '';
+// ======================= 工具 =======================
+function setSubmitLoading(btn, loading, text) {
+  btn.disabled = loading; btn.classList.toggle('loading', loading);
+  btn.querySelector('span').textContent = text;
 }
+function now() { return new Date().toLocaleString('zh-CN'); }
 
-// ---- Toast ----
 function showToast(msg, type = 'info') {
-  const iconMap = {
+  const icons = {
     success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="toast-icon"><path d="M22 11.08V12a10 10 0 11-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></svg>',
     error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="toast-icon"><circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" /></svg>',
     warning: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="toast-icon"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>',
     info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="toast-icon"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>',
   };
-
-  const toast = document.createElement('div');
-  toast.className = `toast ${type}`;
-  toast.innerHTML = `${iconMap[type] || iconMap.info}<span>${escapeHtml(msg)}</span>`;
-  dom.toastContainer.appendChild(toast);
-
-  setTimeout(() => {
-    toast.classList.add('removing');
-    setTimeout(() => toast.remove(), 300);
-  }, 4000);
+  const t = document.createElement('div'); t.className = `toast ${type}`;
+  t.innerHTML = `${icons[type] || icons.info}<span>${esc(msg)}</span>`;
+  dom.toastContainer.appendChild(t);
+  setTimeout(() => { t.classList.add('removing'); setTimeout(() => t.remove(), 300); }, 4000);
 }
 
-// ---- 工具 ----
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-// ---- 粒子背景 ----
+// ======================= 粒子背景 =======================
 function initParticles() {
-  const canvas = dom.canvas;
-  const ctx = canvas.getContext('2d');
-  let particles = [];
-  let w, h;
-
-  function resize() {
-    w = canvas.width = window.innerWidth;
-    h = canvas.height = window.innerHeight;
-  }
-
-  function createParticles() {
-    particles = [];
-    const count = Math.min(Math.floor((w * h) / 18000), 80);
-    for (let i = 0; i < count; i++) {
-      particles.push({
-        x: Math.random() * w,
-        y: Math.random() * h,
-        vx: (Math.random() - 0.5) * 0.3,
-        vy: (Math.random() - 0.5) * 0.3,
-        r: Math.random() * 1.5 + 0.5,
-        alpha: Math.random() * 0.3 + 0.05,
-      });
-    }
-  }
-
-  function draw() {
-    ctx.clearRect(0, 0, w, h);
-    for (const p of particles) {
-      p.x += p.vx;
-      p.y += p.vy;
-      if (p.x < 0) p.x = w;
-      if (p.x > w) p.x = 0;
-      if (p.y < 0) p.y = h;
-      if (p.y > h) p.y = 0;
-
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(129, 140, 248, ${p.alpha})`;
-      ctx.fill();
-    }
-
-    for (let i = 0; i < particles.length; i++) {
-      for (let j = i + 1; j < particles.length; j++) {
-        const dx = particles[i].x - particles[j].x;
-        const dy = particles[i].y - particles[j].y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 120) {
-          ctx.beginPath();
-          ctx.moveTo(particles[i].x, particles[i].y);
-          ctx.lineTo(particles[j].x, particles[j].y);
-          ctx.strokeStyle = `rgba(129, 140, 248, ${0.06 * (1 - dist / 120)})`;
-          ctx.lineWidth = 0.5;
-          ctx.stroke();
-        }
-      }
-    }
-
+  const c = dom.canvas, ctx = c.getContext('2d'); let pts = [], w, h;
+  const resize = () => { w = c.width = window.innerWidth; h = c.height = window.innerHeight; };
+  const create = () => { pts = []; const n = Math.min(Math.floor((w*h)/18000), 80); for (let i=0;i<n;i++) pts.push({x:Math.random()*w,y:Math.random()*h,vx:(Math.random()-.5)*.3,vy:(Math.random()-.5)*.3,r:Math.random()*1.5+.5,a:Math.random()*.3+.05}); };
+  const draw = () => {
+    ctx.clearRect(0,0,w,h);
+    for (const p of pts) { p.x+=p.vx;p.y+=p.vy; if(p.x<0)p.x=w;if(p.x>w)p.x=0;if(p.y<0)p.y=h;if(p.y>h)p.y=0; ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fillStyle=`rgba(129,140,248,${p.a})`;ctx.fill(); }
+    for (let i=0;i<pts.length;i++) for (let j=i+1;j<pts.length;j++) { const dx=pts[i].x-pts[j].x,dy=pts[i].y-pts[j].y,d=Math.sqrt(dx*dx+dy*dy); if(d<120){ctx.beginPath();ctx.moveTo(pts[i].x,pts[i].y);ctx.lineTo(pts[j].x,pts[j].y);ctx.strokeStyle=`rgba(129,140,248,${.06*(1-d/120)})`;ctx.lineWidth=.5;ctx.stroke();} }
     requestAnimationFrame(draw);
-  }
-
-  resize();
-  createParticles();
-  draw();
-
-  window.addEventListener('resize', () => {
-    resize();
-    createParticles();
-  });
+  };
+  resize(); create(); draw();
+  window.addEventListener('resize', () => { resize(); create(); });
 }
 
-// ---- 启动 ----
 document.addEventListener('DOMContentLoaded', init);
