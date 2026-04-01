@@ -389,7 +389,7 @@ async function submitVideoTask() {
   const task = {
     type: 'video', id: Date.now(), taskId: 'vid_' + Date.now(),
     status: 'running', progress: 0, model, prompt,
-    videoUrl: null, imageRef: imageUrl,
+    videoUrl: null, imageRef: imageUrl, errorMsg: null,
     videoLength: dom.vdLength.value, videoRatio: dom.vdRatio.value,
     createdAt: now(),
   };
@@ -397,69 +397,107 @@ async function submitVideoTask() {
   closeVideoDialog();
 
   setSubmitLoading(dom.vdSubmit, true, '生成中...');
-  try {
-    const resp = await fetch(`${server}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${videoKey}` },
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) {
-      const errText = await resp.text().catch(() => '');
-      throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 200)}`);
+  const MAX_RETRIES = 3;
+  let success = false;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      await _executeVideoSSE(task, body, server, videoKey);
+      success = true;
+      break;
+    } catch (e) {
+      if (e.isRateLimit && attempt < MAX_RETRIES) {
+        const delay = 10 * Math.pow(2, attempt);
+        task.errorMsg = `令牌池耗尽，${delay}秒后自动重试 (${attempt + 1}/${MAX_RETRIES})`;
+        updateTaskCard(task.taskId);
+        showToast(task.errorMsg, 'warning');
+        await new Promise(r => setTimeout(r, delay * 1000));
+        task.status = 'running'; task.progress = 0; task.errorMsg = null;
+        updateTaskCard(task.taskId);
+        continue;
+      }
+      task.status = 'failed';
+      task.errorMsg = e.message;
+      saveState(); updateTaskCard(task.taskId);
+      showToast(e.message || '视频生成失败', 'error');
+      break;
     }
+  }
 
-    // SSE 流式解析
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let fullContent = '';
+  if (success) {
+    showToast(task.status === 'completed' ? '视频生成完成！' : '视频生成失败', task.status === 'completed' ? 'success' : 'error');
+  }
+  setSubmitLoading(dom.vdSubmit, false, '开始生成视频');
+}
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
+// ---- 视频 SSE 执行（分离以支持重试）----
+async function _executeVideoSSE(task, body, server, videoKey) {
+  const resp = await fetch(`${server}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${videoKey}` },
+    body: JSON.stringify(body),
+  });
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data:')) continue;
-        const data = trimmed.slice(5).trim();
-        if (data === '[DONE]') continue;
-        try {
-          const json = JSON.parse(data);
-          const delta = json.choices?.[0]?.delta?.content || '';
-          fullContent += delta;
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '');
+    let errMsg = `HTTP ${resp.status}`;
+    try {
+      const errJson = JSON.parse(errText);
+      errMsg = errJson.error?.message || errMsg;
+    } catch { errMsg += ': ' + errText.slice(0, 200); }
+    const err = new Error(errMsg);
+    err.isRateLimit = (resp.status === 403 || resp.status === 429) && /rate.?limit|no available token/i.test(errText);
+    throw err;
+  }
 
-          // 解析进度
-          const pm = delta.match(/当前进度(\d+)%/);
-          if (pm) { task.progress = parseInt(pm[1]); updateTaskCard(task.taskId); }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let fullContent = '';
 
-          // 结束
-          if (json.choices?.[0]?.finish_reason === 'stop') {
-            const urlMatch = fullContent.match(/https?:\/\/[^\s"'<>]+\.mp4/);
-            if (urlMatch) { task.videoUrl = urlMatch[0]; task.status = 'completed'; task.progress = 100; }
-            else { task.status = 'failed'; }
-            saveState(); updateTaskCard(task.taskId);
-          }
-        } catch {}
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const data = trimmed.slice(5).trim();
+      if (data === '[DONE]') continue;
+      let json;
+      try { json = JSON.parse(data); } catch { continue; }
+
+      // 检测 SSE 流中的 error
+      if (json.error) {
+        const errMsg = json.error.message || JSON.stringify(json.error);
+        const err = new Error(errMsg);
+        err.isRateLimit = json.error.code === 'rate_limit_exceeded' || json.error.type === 'rate_limit_error';
+        throw err;
+      }
+
+      const delta = json.choices?.[0]?.delta?.content || '';
+      fullContent += delta;
+
+      const pm = delta.match(/当前进度(\d+)%/);
+      if (pm) { task.progress = parseInt(pm[1]); updateTaskCard(task.taskId); }
+
+      if (json.choices?.[0]?.finish_reason === 'stop') {
+        const urlMatch = fullContent.match(/https?:\/\/[^\s"'<>]+\.mp4/);
+        if (urlMatch) { task.videoUrl = urlMatch[0]; task.status = 'completed'; task.progress = 100; }
+        else { task.status = 'failed'; task.errorMsg = '未解析到视频URL'; }
+        saveState(); updateTaskCard(task.taskId);
       }
     }
+  }
 
-    // 最终检查
-    if (task.status !== 'completed' && task.status !== 'failed') {
-      const urlMatch = fullContent.match(/https?:\/\/[^\s"'<>]+\.mp4/);
-      if (urlMatch) { task.videoUrl = urlMatch[0]; task.status = 'completed'; task.progress = 100; }
-      else { task.status = 'failed'; }
-      saveState(); updateTaskCard(task.taskId);
-    }
-
-    showToast(task.status === 'completed' ? '视频生成完成！' : '视频生成失败', task.status === 'completed' ? 'success' : 'error');
-  } catch (e) {
-    task.status = 'failed'; saveState(); updateTaskCard(task.taskId);
-    showToast(e.message || '视频生成失败', 'error');
-  } finally {
-    setSubmitLoading(dom.vdSubmit, false, '开始生成视频');
+  if (task.status !== 'completed' && task.status !== 'failed') {
+    const urlMatch = fullContent.match(/https?:\/\/[^\s"'<>]+\.mp4/);
+    if (urlMatch) { task.videoUrl = urlMatch[0]; task.status = 'completed'; task.progress = 100; }
+    else { task.status = 'failed'; task.errorMsg = '未解析到视频URL'; }
+    saveState(); updateTaskCard(task.taskId);
   }
 }
 
@@ -515,6 +553,7 @@ function buildTaskCard(t) {
         <span class="task-status-badge ${t.status}"><span class="status-dot-badge"></span>${statusText}</span>
       </div>
       <p class="task-prompt">${esc(t.prompt)}</p>
+      ${t.errorMsg ? `<p class="task-error-msg">⚠️ ${esc(t.errorMsg)}</p>` : ''}
       ${mediaHTML}
       <div class="task-progress-bar"><div class="task-progress-fill ${t.status === 'running' ? 'running' : ''}" style="width:${t.progress}%"></div></div>
       <div class="task-progress-info">

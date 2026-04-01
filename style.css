@@ -777,6 +777,25 @@ body {
   overflow: hidden;
 }
 
+.task-error-msg {
+  font-size: 0.78rem;
+  color: var(--warning);
+  background: var(--warning-bg);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--warning);
+  margin-bottom: 12px;
+  line-height: 1.5;
+  animation: card-in 0.3s ease both;
+}
+
+.task-card .task-status-badge.failed + .task-error-msg,
+.task-error-msg:has(~ .task-status-badge.failed) {
+  color: var(--error);
+  background: var(--error-bg);
+  border-left-color: var(--error);
+}
+
 /* 进度条 */
 .task-progress-bar {
   width: 100%;
