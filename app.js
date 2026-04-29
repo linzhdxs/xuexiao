@@ -2,9 +2,21 @@
    AI 图片 / 视频 生成工作台 - 核心逻辑
    ============================================ */
 
-const IMAGE_API = 'https://api.pearktrue.cn/api/image_generate';
+const PEAR_API_BASE = 'https://api.pearapi.ai';
+const IMAGE_API = `${PEAR_API_BASE}/api/image_generate`;
+const VIDEO_API = `${PEAR_API_BASE}/api/video_generate`;
 const IMGBB_KEY = 'c2d0c798539d2dab9107049c7f544d1d';
 const POLL_INTERVAL = 5000;
+const VIDEO_MODEL_META = {
+  'grok-video-20s': { seconds: 20, label: 'Grok Video 20s' },
+  'grok-video-16s': { seconds: 16, label: 'Grok Video 16s' },
+  'grok3-video': { seconds: 6, label: 'Grok 3 Video' },
+  'grok3-video-10s': { seconds: 10, label: 'Grok 3 Video 10s' },
+};
+
+function getVideoUrl(data) {
+  return data?.api_file_url || data?.video_url || data?.output?.video_url || null;
+}
 
 // ---- 状态 ----
 const state = {
@@ -25,7 +37,6 @@ function cacheDom() {
     // 视频 API
     videoKeyInput:  document.getElementById('input-video-key'),
     toggleVideoKey: document.getElementById('btn-toggle-video-key'),
-    videoServer:    document.getElementById('select-video-server'),
     // 图片生成控件
     modelSelect:    document.getElementById('select-model'),
     ratioGroup:     document.getElementById('ratio-group'),
@@ -56,10 +67,7 @@ function cacheDom() {
     vdClose:        document.getElementById('vdialog-close'),
     vdRefImg:       document.getElementById('vdialog-ref-img'),
     vdModel:        document.getElementById('select-video-model'),
-    vdLength:       document.getElementById('select-video-length'),
     vdRatio:        document.getElementById('select-video-ratio'),
-    vdPreset:       document.getElementById('select-video-preset'),
-    vdResolution:   document.getElementById('select-video-resolution'),
     vdPrompt:       document.getElementById('input-video-prompt'),
     vdSubmit:       document.getElementById('btn-submit-video'),
     // 其他
@@ -92,7 +100,6 @@ function saveState() {
   try {
     localStorage.setItem('gen_key', dom.keyInput.value);
     localStorage.setItem('gen_video_key', dom.videoKeyInput.value);
-    localStorage.setItem('gen_video_server', dom.videoServer.value);
     localStorage.setItem(getTasksStorageKey(), JSON.stringify(state.tasks));
   } catch {}
 }
@@ -100,7 +107,6 @@ function loadState() {
   try {
     const k = localStorage.getItem('gen_key'); if (k) dom.keyInput.value = k;
     const vk = localStorage.getItem('gen_video_key'); if (vk) dom.videoKeyInput.value = vk;
-    const vs = localStorage.getItem('gen_video_server'); if (vs) dom.videoServer.value = vs;
     migrateOldTasks();
     loadTasksForCurrentKey();
   } catch {}
@@ -211,7 +217,6 @@ function bindEvents() {
   dom.keyInput.addEventListener('change', reloadOnKeyChange);
   dom.videoKeyInput.addEventListener('input', saveState);
   dom.videoKeyInput.addEventListener('change', saveState);
-  dom.videoServer.addEventListener('change', saveState);
 }
 
 // ======================= ImgBB 上传 =======================
@@ -340,11 +345,11 @@ function stopPolling(id) { if (state.pollers[id]) { clearInterval(state.pollers[
 function resumePolling() {
   state.tasks.forEach(t => {
     if (t.type === 'image' && (t.status === 'queued' || t.status === 'running')) startImagePolling(t.taskId);
-    // 视频任务是 SSE 流式的，不需要轮询恢复（刷新页面后 SSE 连接已断）
+    if (t.type === 'video' && (t.status === 'queued' || t.status === 'running')) startVideoPolling(t.taskId);
   });
 }
 
-// ======================= 视频生成 (Grok SSE) =======================
+// ======================= 视频生成 (PearAPI Grok) =======================
 function openVideoDialog(imageUrl) {
   state.videoRefImageUrl = imageUrl;
   if (imageUrl) {
@@ -366,139 +371,85 @@ async function submitVideoTask() {
   if (!videoKey) return showToast('请输入视频 API Key', 'error');
   if (!prompt) return showToast('请输入视频提示词', 'error');
 
-  const server = dom.videoServer.value;
   const model = dom.vdModel.value;
+  const meta = VIDEO_MODEL_META[model] || {};
   const imageUrl = state.videoRefImageUrl;
 
-  // 构造 messages
-  const content = [{ type: 'text', text: prompt }];
-  if (imageUrl) content.push({ type: 'image_url', image_url: { url: imageUrl } });
-
   const body = {
+    key: videoKey,
+    prompt,
     model,
-    messages: [{ role: 'user', content }],
-    video_config: {
-      video_length: dom.vdLength.value,
-      aspect_ratio: dom.vdRatio.value,
-      preset: dom.vdPreset.value,
-      resolution_name: dom.vdResolution.value,
-    },
+    aspect_ratio: dom.vdRatio.value,
   };
-
-  // 创建任务
-  const task = {
-    type: 'video', id: Date.now(), taskId: 'vid_' + Date.now(),
-    status: 'running', progress: 0, model, prompt,
-    videoUrl: null, imageRef: imageUrl, errorMsg: null,
-    videoLength: dom.vdLength.value, videoRatio: dom.vdRatio.value,
-    createdAt: now(),
-  };
-  state.tasks.unshift(task); saveState(); renderTaskList();
-  closeVideoDialog();
+  if (imageUrl) body.images = [imageUrl];
 
   setSubmitLoading(dom.vdSubmit, true, '生成中...');
-  const MAX_RETRIES = 3;
-  let success = false;
+  try {
+    const resp = await fetch(VIDEO_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await resp.json();
+    if (json.code !== 200 || !json.data?.task_id) throw new Error(json.msg || json.detail || JSON.stringify(json));
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      await _executeVideoSSE(task, body, server, videoKey);
-      success = true;
-      break;
-    } catch (e) {
-      if (e.isRateLimit && attempt < MAX_RETRIES) {
-        const delay = 10 * Math.pow(2, attempt);
-        task.errorMsg = `令牌池耗尽，${delay}秒后自动重试 (${attempt + 1}/${MAX_RETRIES})`;
-        updateTaskCard(task.taskId);
-        showToast(task.errorMsg, 'warning');
-        await new Promise(r => setTimeout(r, delay * 1000));
-        task.status = 'running'; task.progress = 0; task.errorMsg = null;
-        updateTaskCard(task.taskId);
-        continue;
-      }
-      task.status = 'failed';
-      task.errorMsg = e.message;
-      saveState(); updateTaskCard(task.taskId);
-      showToast(e.message || '视频生成失败', 'error');
-      break;
-    }
+    const task = {
+      type: 'video', id: Date.now(), taskId: json.data.task_id,
+      status: json.data.status || 'queued',
+      progress: json.data.progress || 0,
+      model: json.data.model || model, prompt,
+      videoUrl: getVideoUrl(json.data),
+      imageRef: imageUrl, errorMsg: null,
+      videoLength: meta.seconds || '',
+      videoRatio: dom.vdRatio.value,
+      createdAt: now(),
+    };
+    if (task.videoUrl) { task.status = 'completed'; task.progress = 100; }
+    state.tasks.unshift(task); saveState(); renderTaskList();
+    closeVideoDialog();
+    if (task.status === 'completed') showToast('视频生成完成！', 'success');
+    else { startVideoPolling(task.taskId); showToast('视频任务已提交（异步）', 'success'); }
+  } catch (e) {
+    showToast(e.message || '视频任务提交失败', 'error');
+    console.error('Video gen error:', e);
+  } finally {
+    setSubmitLoading(dom.vdSubmit, false, '开始生成视频');
   }
-
-  if (success) {
-    showToast(task.status === 'completed' ? '视频生成完成！' : '视频生成失败', task.status === 'completed' ? 'success' : 'error');
-  }
-  setSubmitLoading(dom.vdSubmit, false, '开始生成视频');
 }
 
-// ---- 视频 SSE 执行（分离以支持重试）----
-async function _executeVideoSSE(task, body, server, videoKey) {
-  const resp = await fetch(`${server}/v1/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${videoKey}` },
-    body: JSON.stringify(body),
-  });
-
-  if (!resp.ok) {
-    const errText = await resp.text().catch(() => '');
-    let errMsg = `HTTP ${resp.status}`;
+function startVideoPolling(taskId) {
+  if (state.pollers[taskId]) return;
+  const poll = async () => {
+    const key = dom.videoKeyInput.value.trim(); if (!key) return;
     try {
-      const errJson = JSON.parse(errText);
-      errMsg = errJson.error?.message || errMsg;
-    } catch { errMsg += ': ' + errText.slice(0, 200); }
-    const err = new Error(errMsg);
-    err.isRateLimit = (resp.status === 403 || resp.status === 429) && /rate.?limit|no available token/i.test(errText);
-    throw err;
-  }
-
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let fullContent = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop();
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data:')) continue;
-      const data = trimmed.slice(5).trim();
-      if (data === '[DONE]') continue;
-      let json;
-      try { json = JSON.parse(data); } catch { continue; }
-
-      // 检测 SSE 流中的 error
-      if (json.error) {
-        const errMsg = json.error.message || JSON.stringify(json.error);
-        const err = new Error(errMsg);
-        err.isRateLimit = json.error.code === 'rate_limit_exceeded' || json.error.type === 'rate_limit_error';
-        throw err;
+      const r = await fetch(VIDEO_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, taskid: taskId }),
+      });
+      const j = await r.json();
+      if (j.code === 200 && j.data) {
+        const t = state.tasks.find(x => x.taskId === taskId); if (!t) return stopPolling(taskId);
+        t.status = j.data.status || t.status;
+        t.progress = j.data.progress ?? t.progress;
+        t.model = j.data.model || t.model;
+        t.videoUrl = getVideoUrl(j.data) || t.videoUrl;
+        if (t.status === 'completed') {
+          t.progress = 100;
+          stopPolling(taskId);
+          if (!t.videoUrl) t.errorMsg = '视频已完成，但未返回视频地址';
+          showToast(t.videoUrl ? '视频生成完成！' : '视频生成完成但未返回地址', t.videoUrl ? 'success' : 'warning');
+        }
+        if (t.status === 'failed') {
+          t.errorMsg = j.data.error?.message || j.detail || j.msg || '视频任务失败';
+          stopPolling(taskId);
+          showToast(t.errorMsg, 'error');
+        }
+        saveState(); updateTaskCard(taskId);
       }
-
-      const delta = json.choices?.[0]?.delta?.content || '';
-      fullContent += delta;
-
-      const pm = delta.match(/当前进度(\d+)%/);
-      if (pm) { task.progress = parseInt(pm[1]); updateTaskCard(task.taskId); }
-
-      if (json.choices?.[0]?.finish_reason === 'stop') {
-        const urlMatch = fullContent.match(/https?:\/\/[^\s"'<>]+\.mp4/);
-        if (urlMatch) { task.videoUrl = urlMatch[0]; task.status = 'completed'; task.progress = 100; }
-        else { task.status = 'failed'; task.errorMsg = '未解析到视频URL'; }
-        saveState(); updateTaskCard(task.taskId);
-      }
-    }
-  }
-
-  if (task.status !== 'completed' && task.status !== 'failed') {
-    const urlMatch = fullContent.match(/https?:\/\/[^\s"'<>]+\.mp4/);
-    if (urlMatch) { task.videoUrl = urlMatch[0]; task.status = 'completed'; task.progress = 100; }
-    else { task.status = 'failed'; task.errorMsg = '未解析到视频URL'; }
-    saveState(); updateTaskCard(task.taskId);
-  }
+    } catch {}
+  };
+  poll(); state.pollers[taskId] = setInterval(poll, POLL_INTERVAL);
 }
 
 // ======================= 渲染任务列表 =======================
@@ -557,7 +508,7 @@ function buildTaskCard(t) {
       ${mediaHTML}
       <div class="task-progress-bar"><div class="task-progress-fill ${t.status === 'running' ? 'running' : ''}" style="width:${t.progress}%"></div></div>
       <div class="task-progress-info">
-        <span>${isVideo ? (t.videoLength||'')+'秒 ' : (t.size||'')+' · '}${t.createdAt}</span>
+        <span>${isVideo ? (t.videoLength ? `${t.videoLength}秒 · ` : '') : (t.size ? `${t.size} · ` : '')}${t.createdAt}</span>
         <span class="progress-percent">${t.progress}%</span>
       </div>
       <div class="task-card-footer">

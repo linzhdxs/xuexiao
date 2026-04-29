@@ -1,7 +1,7 @@
 // Cloudflare Worker - API 代理
 // 部署方式：https://dash.cloudflare.com → Workers & Pages → 创建 → 粘贴此代码 → 部署
 
-const TARGET = 'https://api.pearktrue.cn';
+const TARGET = 'https://api.pearapi.ai';
 
 export default {
   async fetch(request) {

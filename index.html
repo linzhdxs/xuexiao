@@ -53,29 +53,16 @@
           </button>
         </div>
 
-        <!-- ===== 视频 API Key (yijiarj) ===== -->
+        <!-- ===== 视频 API Key (PearAPI) ===== -->
         <div class="form-group">
           <label class="form-label" for="input-video-key">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" ry="2" /></svg>
-            视频 API Key <span class="label-sub">(Grok Video)</span>
+            视频 API Key <span class="label-sub">(PearAPI Grok)</span>
           </label>
           <input type="password" id="input-video-key" class="form-input" placeholder="用于 Grok 视频生成" autocomplete="off" />
           <button class="btn-toggle-key" id="btn-toggle-video-key" title="显示/隐藏">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="eye-icon"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
           </button>
-        </div>
-
-        <!-- ===== 视频 API 线路 ===== -->
-        <div class="form-group">
-          <label class="form-label" for="select-video-server">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" /></svg>
-            视频 API 线路
-          </label>
-          <select id="select-video-server" class="form-select">
-            <option value="https://api.yijiarj.cn">国内(大带宽)</option>
-            <option value="https://ai.yijiarj.cn">国内(小带宽)</option>
-            <option value="https://apius.yijiarj.cn">美国线路</option>
-          </select>
         </div>
 
         <!-- 分隔 -->
@@ -229,14 +216,10 @@
           <div class="form-group">
             <label class="form-label">视频模型</label>
             <select id="select-video-model" class="form-select">
-              <option value="grok-imagine-1.0-video-super" selected>Grok Video Super (高质量)</option>
-            </select>
-          </div>
-          <!-- 时长 -->
-          <div class="form-group">
-            <label class="form-label">时长</label>
-            <select id="select-video-length" class="form-select">
-              <option value="10" selected>10 秒</option>
+              <option value="grok-video-20s" selected>grok-video-20s (20秒 · ¥0.4)</option>
+              <option value="grok-video-16s">grok-video-16s (16秒 · ¥0.3)</option>
+              <option value="grok3-video">grok3-video (6秒 · ¥0.24)</option>
+              <option value="grok3-video-10s">grok3-video-10s (10秒 · ¥0.24)</option>
             </select>
           </div>
           <!-- 比例 -->
@@ -248,24 +231,6 @@
               <option value="1:1">1:1 方形</option>
               <option value="2:3">2:3</option>
               <option value="3:2">3:2</option>
-            </select>
-          </div>
-          <!-- 风格 -->
-          <div class="form-group">
-            <label class="form-label">风格预设</label>
-            <select id="select-video-preset" class="form-select">
-              <option value="normal" selected>Normal 标准</option>
-              <option value="fun">Fun 有趣</option>
-              <option value="spicy">Spicy 劲爆</option>
-              <option value="custom">Custom 自定义</option>
-            </select>
-          </div>
-          <!-- 分辨率 -->
-          <div class="form-group">
-            <label class="form-label">分辨率</label>
-            <select id="select-video-resolution" class="form-select">
-              <option value="720p" selected>720p</option>
-              <option value="480p">480p</option>
             </select>
           </div>
         </div>
