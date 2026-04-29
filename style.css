@@ -1168,17 +1168,41 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 12px;
+  padding: 12px 12px 30px;
   background: rgba(255,255,255,0.03);
   border: 1px solid var(--border-card);
   border-radius: var(--radius-md);
 }
 
-.vdialog-ref img {
-  max-height: 180px;
-  max-width: 100%;
+.vdialog-ref-list {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 8px;
+}
+
+.vdialog-ref-item {
+  position: relative;
+  min-width: 0;
+}
+
+.vdialog-ref-item img {
+  width: 100%;
+  aspect-ratio: 1;
   border-radius: var(--radius-sm);
-  object-fit: contain;
+  object-fit: cover;
+  border: 1px solid var(--border-card);
+}
+
+.vdialog-ref-item span {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 2px 6px;
+  font-size: 0.68rem;
+  color: white;
+  background: rgba(15, 23, 42, 0.7);
+  border-radius: var(--radius-sm);
 }
 
 .vdialog-ref-label {

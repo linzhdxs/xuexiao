@@ -41,26 +41,14 @@
       </div>
 
       <div class="panel-body">
-        <!-- ===== 图片 API Key (PearAPI) ===== -->
+        <!-- ===== PearAPI Key ===== -->
         <div class="form-group">
           <label class="form-label" for="input-key">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" /></svg>
-            图片 API Key <span class="label-sub">(PearAPI)</span>
+            PearAPI API Key <span class="label-sub">(图片 / Grok 视频)</span>
           </label>
-          <input type="password" id="input-key" class="form-input" placeholder="用于 Nano Banana 生图" autocomplete="off" />
+          <input type="password" id="input-key" class="form-input" placeholder="用于图片和 Grok 视频生成" autocomplete="off" />
           <button class="btn-toggle-key" id="btn-toggle-key" title="显示/隐藏">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="eye-icon"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
-          </button>
-        </div>
-
-        <!-- ===== 视频 API Key (PearAPI) ===== -->
-        <div class="form-group">
-          <label class="form-label" for="input-video-key">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" ry="2" /></svg>
-            视频 API Key <span class="label-sub">(PearAPI Grok)</span>
-          </label>
-          <input type="password" id="input-video-key" class="form-input" placeholder="用于 Grok 视频生成" autocomplete="off" />
-          <button class="btn-toggle-key" id="btn-toggle-video-key" title="显示/隐藏">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="eye-icon"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
           </button>
         </div>
@@ -206,9 +194,9 @@
       </div>
       <div class="vdialog-body">
         <!-- 参考图预览 -->
-        <div class="vdialog-ref">
-          <img id="vdialog-ref-img" src="" alt="参考图片" />
-          <div class="vdialog-ref-label">参考图 (@图一)</div>
+        <div class="vdialog-ref" id="vdialog-ref">
+          <div class="vdialog-ref-list" id="vdialog-ref-list"></div>
+          <div class="vdialog-ref-label" id="vdialog-ref-label">参考图</div>
         </div>
 
         <div class="vdialog-grid">

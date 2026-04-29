@@ -8,10 +8,10 @@ const VIDEO_API = `${PEAR_API_BASE}/api/video_generate`;
 const IMGBB_KEY = 'c2d0c798539d2dab9107049c7f544d1d';
 const POLL_INTERVAL = 5000;
 const VIDEO_MODEL_META = {
-  'grok-video-20s': { seconds: 20, label: 'Grok Video 20s' },
-  'grok-video-16s': { seconds: 16, label: 'Grok Video 16s' },
-  'grok3-video': { seconds: 6, label: 'Grok 3 Video' },
-  'grok3-video-10s': { seconds: 10, label: 'Grok 3 Video 10s' },
+  'grok-video-20s': { seconds: 20, maxImages: 5, label: 'Grok Video 20s' },
+  'grok-video-16s': { seconds: 16, maxImages: 5, label: 'Grok Video 16s' },
+  'grok3-video': { seconds: 6, maxImages: 1, label: 'Grok 3 Video' },
+  'grok3-video-10s': { seconds: 10, maxImages: 1, label: 'Grok 3 Video 10s' },
 };
 
 function getVideoUrl(data) {
@@ -24,7 +24,7 @@ const state = {
   pollers: {},
   selectedSize: '16:9',
   uploadedImages: [],
-  videoRefImageUrl: null, // 当前选中用于生成视频的图片
+  videoRefImageUrls: [], // 当前选中用于生成视频的参考图
 };
 
 // ---- DOM ----
@@ -34,9 +34,6 @@ function cacheDom() {
     // 图片 API
     keyInput:       document.getElementById('input-key'),
     toggleKey:      document.getElementById('btn-toggle-key'),
-    // 视频 API
-    videoKeyInput:  document.getElementById('input-video-key'),
-    toggleVideoKey: document.getElementById('btn-toggle-video-key'),
     // 图片生成控件
     modelSelect:    document.getElementById('select-model'),
     ratioGroup:     document.getElementById('ratio-group'),
@@ -65,7 +62,9 @@ function cacheDom() {
     // 视频生成对话框
     vdOverlay:      document.getElementById('vdialog-overlay'),
     vdClose:        document.getElementById('vdialog-close'),
-    vdRefImg:       document.getElementById('vdialog-ref-img'),
+    vdRef:          document.getElementById('vdialog-ref'),
+    vdRefList:      document.getElementById('vdialog-ref-list'),
+    vdRefLabel:     document.getElementById('vdialog-ref-label'),
     vdModel:        document.getElementById('select-video-model'),
     vdRatio:        document.getElementById('select-video-ratio'),
     vdPrompt:       document.getElementById('input-video-prompt'),
@@ -99,21 +98,26 @@ function getTasksStorageKey() {
 function saveState() {
   try {
     localStorage.setItem('gen_key', dom.keyInput.value);
-    localStorage.setItem('gen_video_key', dom.videoKeyInput.value);
     localStorage.setItem(getTasksStorageKey(), JSON.stringify(state.tasks));
   } catch {}
 }
 function loadState() {
   try {
-    const k = localStorage.getItem('gen_key'); if (k) dom.keyInput.value = k;
-    const vk = localStorage.getItem('gen_video_key'); if (vk) dom.videoKeyInput.value = vk;
+    const k = localStorage.getItem('gen_key');
+    const legacyVideoKey = localStorage.getItem('gen_video_key');
+    if (k) dom.keyInput.value = k;
+    else if (legacyVideoKey) {
+      dom.keyInput.value = legacyVideoKey;
+      localStorage.setItem('gen_key', legacyVideoKey);
+    }
     migrateOldTasks();
+    localStorage.removeItem('gen_video_key');
     loadTasksForCurrentKey();
   } catch {}
 }
 function migrateOldTasks() {
   const ik = dom.keyInput.value.trim();
-  const vk = dom.videoKeyInput.value.trim();
+  const vk = (localStorage.getItem('gen_video_key') || '').trim();
   const hImg = ik ? hashKey(ik) : '';
   // 固定旧键 + 各版本哈希键
   const sources = [
@@ -151,7 +155,6 @@ function loadTasksForCurrentKey() {
 function bindEvents() {
   // Key 显隐
   dom.toggleKey.addEventListener('click', () => { dom.keyInput.type = dom.keyInput.type === 'password' ? 'text' : 'password'; });
-  dom.toggleVideoKey.addEventListener('click', () => { dom.videoKeyInput.type = dom.videoKeyInput.type === 'password' ? 'text' : 'password'; });
 
   // 字数
   dom.promptInput.addEventListener('input', () => { dom.charCount.textContent = dom.promptInput.value.length; });
@@ -182,9 +185,8 @@ function bindEvents() {
   // 生成图片 / 生成视频
   dom.submitBtn.addEventListener('click', submitImageTask);
   dom.openVideoBtn.addEventListener('click', () => {
-    // 如果有已上传的参考图，用第一张；否则无图直接开
     const urls = getUploadedImageUrls();
-    openVideoDialog(urls.length ? urls[0] : null);
+    openVideoDialog(urls);
   });
 
   // 图片模态框
@@ -199,6 +201,7 @@ function bindEvents() {
   dom.vdClose.addEventListener('click', closeVideoDialog);
   dom.vdOverlay.addEventListener('click', (e) => { if (e.target === dom.vdOverlay) closeVideoDialog(); });
   dom.vdSubmit.addEventListener('click', submitVideoTask);
+  dom.vdModel.addEventListener('change', renderVideoRefPreview);
 
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeImageModal(); closeVideoModal(); closeVideoDialog(); } });
 
@@ -215,8 +218,6 @@ function bindEvents() {
   };
   dom.keyInput.addEventListener('input', reloadOnKeyChange);
   dom.keyInput.addEventListener('change', reloadOnKeyChange);
-  dom.videoKeyInput.addEventListener('input', saveState);
-  dom.videoKeyInput.addEventListener('change', saveState);
 }
 
 // ======================= ImgBB 上传 =======================
@@ -350,38 +351,69 @@ function resumePolling() {
 }
 
 // ======================= 视频生成 (PearAPI Grok) =======================
-function openVideoDialog(imageUrl) {
-  state.videoRefImageUrl = imageUrl;
-  if (imageUrl) {
-    dom.vdRefImg.src = imageUrl;
-    dom.vdRefImg.parentElement.style.display = '';
-    dom.vdPrompt.value = '图片中的人物动起来';
-  } else {
-    dom.vdRefImg.src = '';
-    dom.vdRefImg.parentElement.style.display = 'none';
-    dom.vdPrompt.value = '';
+function getVideoModelMeta(model = dom.vdModel.value) {
+  return VIDEO_MODEL_META[model] || { seconds: '', maxImages: 1, label: model };
+}
+
+function normalizeVideoRefs(refs) {
+  if (!refs) return [];
+  const list = Array.isArray(refs) ? refs : [refs];
+  return list.filter(Boolean);
+}
+
+function getLimitedVideoRefs() {
+  const max = getVideoModelMeta().maxImages || 1;
+  return state.videoRefImageUrls.slice(0, max);
+}
+
+function renderVideoRefPreview() {
+  const refs = getLimitedVideoRefs();
+  const total = state.videoRefImageUrls.length;
+  if (!refs.length) {
+    dom.vdRef.style.display = 'none';
+    dom.vdRefList.innerHTML = '';
+    dom.vdRefLabel.textContent = '';
+    return;
   }
+
+  dom.vdRef.style.display = '';
+  dom.vdRefList.innerHTML = refs.map((url, i) => `
+    <div class="vdialog-ref-item">
+      <img src="${url}" alt="参考图${i + 1}" />
+      <span>@图${i + 1}</span>
+    </div>
+  `).join('');
+
+  const meta = getVideoModelMeta();
+  const trimmed = total > refs.length ? `，已按模型限制取前 ${refs.length} 张` : '';
+  dom.vdRefLabel.textContent = `参考图 ${refs.length}/${meta.maxImages}${trimmed}`;
+}
+
+function openVideoDialog(imageRefs) {
+  state.videoRefImageUrls = normalizeVideoRefs(imageRefs);
+  renderVideoRefPreview();
+  dom.vdPrompt.value = state.videoRefImageUrls.length ? '让@图1中的画面动起来' : '';
   dom.vdOverlay.classList.add('active');
 }
 function closeVideoDialog() { dom.vdOverlay.classList.remove('active'); }
 
 async function submitVideoTask() {
-  const videoKey = dom.videoKeyInput.value.trim();
+  const apiKey = dom.keyInput.value.trim();
   const prompt = dom.vdPrompt.value.trim();
-  if (!videoKey) return showToast('请输入视频 API Key', 'error');
+  if (!apiKey) return showToast('请输入 PearAPI API Key', 'error');
   if (!prompt) return showToast('请输入视频提示词', 'error');
 
   const model = dom.vdModel.value;
   const meta = VIDEO_MODEL_META[model] || {};
-  const imageUrl = state.videoRefImageUrl;
+  const imageUrls = getLimitedVideoRefs();
 
   const body = {
-    key: videoKey,
+    key: apiKey,
     prompt,
     model,
     aspect_ratio: dom.vdRatio.value,
   };
-  if (imageUrl) body.images = [imageUrl];
+  if (imageUrls.length) body.images = imageUrls;
 
   setSubmitLoading(dom.vdSubmit, true, '生成中...');
   try {
@@ -399,7 +431,9 @@ async function submitVideoTask() {
       progress: json.data.progress || 0,
       model: json.data.model || model, prompt,
       videoUrl: getVideoUrl(json.data),
-      imageRef: imageUrl, errorMsg: null,
+      imageRef: imageUrls[0] || null,
+      imageRefs: imageUrls,
+      errorMsg: null,
       videoLength: meta.seconds || '',
       videoRatio: dom.vdRatio.value,
       createdAt: now(),
@@ -420,7 +454,7 @@ async function submitVideoTask() {
 function startVideoPolling(taskId) {
   if (state.pollers[taskId]) return;
   const poll = async () => {
-    const key = dom.videoKeyInput.value.trim(); if (!key) return;
+    const key = dom.keyInput.value.trim(); if (!key) return;
     try {
       const r = await fetch(VIDEO_API, {
         method: 'POST',
@@ -469,6 +503,11 @@ function updateTaskCard(taskId) {
   bindTaskEvents();
 }
 
+function getTaskImageRefs(t) {
+  if (Array.isArray(t.imageRefs) && t.imageRefs.length) return t.imageRefs;
+  return t.imageRef ? [t.imageRef] : [];
+}
+
 function buildTaskCard(t) {
   const isVideo = t.type === 'video';
   const badge = isVideo ? '🎬 视频' : '🖼️ 图片';
@@ -480,8 +519,13 @@ function buildTaskCard(t) {
   } else if (!isVideo && t.imageUrls?.length) {
     mediaHTML = `<div class="task-thumb-area">${t.imageUrls.map((u, i) => `<img src="${u}" alt="图片${i+1}" class="task-thumb" data-action="preview-image" data-url="${u}" title="点击预览" />`).join('')}</div>`;
   }
-  if (isVideo && t.imageRef) {
-    mediaHTML = `<div class="task-ref-badge"><img src="${t.imageRef}" class="task-ref-mini" alt="参考图" /><span>参考图</span></div>` + mediaHTML;
+  const refs = isVideo ? getTaskImageRefs(t) : [];
+  if (refs.length) {
+    mediaHTML = `
+      <div class="task-ref-badge">
+        ${refs.slice(0, 5).map((u, i) => `<img src="${u}" class="task-ref-mini" alt="参考图${i + 1}" />`).join('')}
+        <span>参考图${refs.length > 1 ? ` × ${refs.length}` : ''}</span>
+      </div>` + mediaHTML;
   }
 
   let actionsHTML = '';
