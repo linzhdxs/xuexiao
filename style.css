@@ -1102,73 +1102,66 @@ body {
   opacity: 0.5;
 }
 
-/* ---------- 视频生成对话框 ---------- */
-.vdialog-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 600;
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 4px;
+  margin: 4px 0 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.mode-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(8px);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--transition-smooth);
-}
-
-.vdialog-overlay.active {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.vdialog {
-  max-width: 560px;
-  width: 92%;
-  max-height: 90vh;
-  overflow-y: auto;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-card);
-  border-radius: var(--radius-xl);
-  transform: scale(0.9) translateY(20px);
-  transition: transform var(--transition-smooth);
-}
-
-.vdialog-overlay.active .vdialog {
-  transform: scale(1) translateY(0);
-}
-
-.vdialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 18px 20px 14px;
-  border-bottom: 1px solid var(--border-card);
-}
-
-.vdialog-header h3 {
-  display: flex;
-  align-items: center;
   gap: 8px;
-  font-size: 1rem;
+  min-height: 42px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.9rem;
   font-weight: 700;
+  transition: all var(--transition-normal);
+}
+
+.mode-btn:hover {
   color: var(--text-primary);
-  margin: 0;
+  background: rgba(255,255,255,0.04);
 }
 
-.vdialog-body {
-  padding: 16px 20px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+.mode-btn.active {
+  color: white;
+  background: var(--accent-gradient-vivid);
+  box-shadow: 0 8px 22px rgba(var(--accent-primary-rgb), 0.18);
 }
 
+.mode-icon {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.mode-panel[hidden] {
+  display: none !important;
+}
+
+.mode-panel.active {
+  animation: card-in 0.22s ease both;
+}
+
+/* ---------- 视频参考图预览 ---------- */
 .vdialog-ref {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 12px 12px 30px;
+  margin-bottom: 14px;
   background: rgba(255,255,255,0.03);
   border: 1px solid var(--border-card);
   border-radius: var(--radius-md);
@@ -1214,16 +1207,6 @@ body {
   background: rgba(var(--accent-primary-rgb), 0.15);
   color: var(--accent-primary);
   border-radius: var(--radius-sm);
-}
-
-.vdialog-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-
-.vdialog-grid .form-group {
-  margin-bottom: 0;
 }
 
 .btn-video-submit {
@@ -1336,7 +1319,4 @@ body {
     padding: 0 16px;
   }
 
-  .vdialog-grid {
-    grid-template-columns: 1fr;
-  }
 }

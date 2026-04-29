@@ -7,6 +7,7 @@ const IMAGE_API = `${PEAR_API_BASE}/api/image_generate`;
 const VIDEO_API = `${PEAR_API_BASE}/api/video_generate`;
 const IMGBB_KEY = 'c2d0c798539d2dab9107049c7f544d1d';
 const POLL_INTERVAL = 5000;
+const ASSET_VERSION = '20260429-4';
 const VIDEO_MODEL_META = {
   'grok-video-20s': { seconds: 20, maxImages: 5, label: 'Grok Video 20s' },
   'grok-video-16s': { seconds: 16, maxImages: 5, label: 'Grok Video 16s' },
@@ -18,13 +19,21 @@ function getVideoUrl(data) {
   return data?.api_file_url || data?.video_url || data?.output?.video_url || null;
 }
 
+function getImageUrls(data) {
+  if (Array.isArray(data?.image_urls)) return data.image_urls;
+  if (data?.image_url) return [data.image_url];
+  return null;
+}
+
 // ---- 状态 ----
 const state = {
   tasks: [],          // { type:'image'|'video', id, taskId, status, progress, model, prompt, ...extra }
   pollers: {},
+  mode: 'image',
   selectedSize: '16:9',
   uploadedImages: [],
   videoRefImageUrls: [], // 当前选中用于生成视频的参考图
+  videoRefSource: 'uploads',
 };
 
 // ---- DOM ----
@@ -44,7 +53,13 @@ function cacheDom() {
     promptInput:    document.getElementById('input-prompt'),
     charCount:      document.getElementById('char-count'),
     submitBtn:      document.getElementById('btn-submit'),
-    openVideoBtn:   document.getElementById('btn-open-video-dialog'),
+    modeSwitch:     document.getElementById('mode-switch'),
+    imageModePanel: document.getElementById('image-mode-panel'),
+    videoModePanel: document.getElementById('video-mode-panel'),
+    imageActionPanel: document.getElementById('image-action-panel'),
+    videoActionPanel: document.getElementById('video-action-panel'),
+    referenceTitle: document.getElementById('reference-title'),
+    referenceSub:   document.getElementById('reference-sub'),
     // 任务列表
     taskList:       document.getElementById('task-list'),
     taskCount:      document.getElementById('task-count'),
@@ -59,9 +74,7 @@ function cacheDom() {
     modalVideo:     document.getElementById('modal-video'),
     videoModalDownload: document.getElementById('video-modal-download'),
     videoModalClose: document.getElementById('video-modal-close'),
-    // 视频生成对话框
-    vdOverlay:      document.getElementById('vdialog-overlay'),
-    vdClose:        document.getElementById('vdialog-close'),
+    // 视频生成控件
     vdRef:          document.getElementById('vdialog-ref'),
     vdRefList:      document.getElementById('vdialog-ref-list'),
     vdRefLabel:     document.getElementById('vdialog-ref-label'),
@@ -78,8 +91,17 @@ function cacheDom() {
 // ======================= 初始化 =======================
 function init() {
   cacheDom();
+  const missing = Object.entries(dom).filter(([, el]) => !el).map(([key]) => key);
+  if (missing.length) {
+    const msg = `页面结构未加载完整，请强制刷新后重试。缺失节点：${missing.join(', ')}`;
+    console.error(msg);
+    alert(msg);
+    return;
+  }
   loadState();
+  document.documentElement.dataset.appVersion = ASSET_VERSION;
   bindEvents();
+  setMode(state.mode);
   initParticles();
   renderTaskList();
   resumePolling();
@@ -159,6 +181,13 @@ function bindEvents() {
   // 字数
   dom.promptInput.addEventListener('input', () => { dom.charCount.textContent = dom.promptInput.value.length; });
 
+  dom.modeSwitch.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-mode]');
+    if (!btn) return;
+    if (btn.dataset.mode === 'video') setMode('video', { refs: getUploadedImageUrls(), source: 'uploads' });
+    else setMode('image');
+  });
+
   // 图片尺寸
   dom.ratioGroup.addEventListener('click', (e) => {
     const btn = e.target.closest('.ratio-btn'); if (!btn) return;
@@ -184,10 +213,7 @@ function bindEvents() {
 
   // 生成图片 / 生成视频
   dom.submitBtn.addEventListener('click', submitImageTask);
-  dom.openVideoBtn.addEventListener('click', () => {
-    const urls = getUploadedImageUrls();
-    openVideoDialog(urls);
-  });
+  dom.vdSubmit.addEventListener('click', submitVideoTask);
 
   // 图片模态框
   dom.modalClose.addEventListener('click', closeImageModal);
@@ -197,13 +223,9 @@ function bindEvents() {
   dom.videoModalClose.addEventListener('click', closeVideoModal);
   dom.videoModalOverlay.addEventListener('click', (e) => { if (e.target === dom.videoModalOverlay) closeVideoModal(); });
 
-  // 视频生成对话框
-  dom.vdClose.addEventListener('click', closeVideoDialog);
-  dom.vdOverlay.addEventListener('click', (e) => { if (e.target === dom.vdOverlay) closeVideoDialog(); });
-  dom.vdSubmit.addEventListener('click', submitVideoTask);
-  dom.vdModel.addEventListener('change', renderVideoRefPreview);
+  dom.vdModel.addEventListener('change', () => { updateReferenceText(); renderVideoRefPreview(); });
 
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeImageModal(); closeVideoModal(); closeVideoDialog(); } });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeImageModal(); closeVideoModal(); } });
 
   // 密钥变更 — input 事件 + 防抖，输入即触发
   let _keyDebounce = null;
@@ -258,7 +280,13 @@ function removeUploadedImage(id) {
   if (i !== -1) { URL.revokeObjectURL(state.uploadedImages[i].previewUrl); state.uploadedImages.splice(i, 1); renderImagePreviews(); }
 }
 function renderImagePreviews() {
-  if (!state.uploadedImages.length) { dom.previewList.innerHTML = ''; dom.imageTip.style.display = 'none'; return; }
+  updateReferenceText();
+  if (!state.uploadedImages.length) {
+    dom.previewList.innerHTML = '';
+    dom.imageTip.style.display = 'none';
+    syncVideoRefsFromUploads();
+    return;
+  }
   dom.imageTip.style.display = 'block';
   dom.previewList.innerHTML = state.uploadedImages.map((img, i) => `
     <div class="img-preview-item ${img.uploading ? 'uploading' : ''} ${img.error ? 'error' : ''}">
@@ -272,6 +300,7 @@ function renderImagePreviews() {
       </div>
       <button class="img-remove-btn" data-id="${img.id}" title="移除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg></button>
     </div>`).join('');
+  syncVideoRefsFromUploads();
 }
 function getUploadedImageUrls() {
   return state.uploadedImages.filter(x => x.imgbbUrl && !x.uploading && !x.error).map(x => x.imgbbUrl);
@@ -285,7 +314,7 @@ async function submitImageTask() {
   const key = dom.keyInput.value.trim();
   const prompt = dom.promptInput.value.trim();
   const model = dom.modelSelect.value;
-  if (!key) return showToast('请输入图片 API Key', 'error');
+  if (!key) return showToast('请输入 PearAPI API Key', 'error');
   if (!prompt) return showToast('请输入提示词', 'error');
   if (state.uploadedImages.some(x => x.uploading)) return showToast('请等待图片上传完成', 'warning');
 
@@ -306,13 +335,8 @@ async function submitImageTask() {
       const task = { type: 'image', id: Date.now(), taskId: json.data.task_id, status: json.data.status || 'queued', progress: json.data.progress || 0, model: json.data.model || model, prompt, size: state.selectedSize, imageUrls: null, createdAt: now() };
       state.tasks.unshift(task); saveState(); renderTaskList(); startImagePolling(task.taskId);
       showToast('图片任务已提交（异步）', 'success');
-    } else if (json.data?.image_urls) {
-      const task = { type: 'image', id: Date.now(), taskId: 'sync_' + Date.now(), status: 'completed', progress: 100, model, prompt, size: state.selectedSize, imageUrls: json.data.image_urls, createdAt: now() };
-      state.tasks.unshift(task); saveState(); renderTaskList();
-      showToast('图片生成成功！', 'success');
-    } else if (json.data?.image_url) {
-      // 某些模型返回单张 image_url 而非数组
-      const task = { type: 'image', id: Date.now(), taskId: 'sync_' + Date.now(), status: 'completed', progress: 100, model, prompt, size: state.selectedSize, imageUrls: [json.data.image_url], createdAt: now() };
+    } else if (getImageUrls(json.data)) {
+      const task = { type: 'image', id: Date.now(), taskId: 'sync_' + Date.now(), status: 'completed', progress: 100, model, prompt, size: state.selectedSize, imageUrls: getImageUrls(json.data), createdAt: now() };
       state.tasks.unshift(task); saveState(); renderTaskList();
       showToast('图片生成成功！', 'success');
     } else throw new Error('未知响应: ' + JSON.stringify(json.data).slice(0, 200));
@@ -333,12 +357,30 @@ function startImagePolling(taskId) {
       const j = await r.json();
       if (j.code === 200 && j.data) {
         const t = state.tasks.find(x => x.taskId === taskId); if (!t) return stopPolling(taskId);
-        t.status = j.data.status || t.status; t.progress = j.data.progress || t.progress;
-        if (j.data.status === 'completed') { t.imageUrls = j.data.image_urls; t.progress = 100; stopPolling(taskId); showToast('图片生成完成！', 'success'); }
-        if (j.data.status === 'failed') { stopPolling(taskId); showToast('图片任务失败', 'error'); }
+        t.pollErrorCount = 0;
+        t.status = j.data.status || t.status; t.progress = j.data.progress ?? t.progress;
+        if (j.data.status === 'completed') { t.imageUrls = getImageUrls(j.data); t.progress = 100; stopPolling(taskId); showToast(t.imageUrls?.length ? '图片生成完成！' : '图片生成完成但未返回地址', t.imageUrls?.length ? 'success' : 'warning'); }
+        if (j.data.status === 'failed') { t.errorMsg = j.detail || j.msg || '图片任务失败'; stopPolling(taskId); showToast(t.errorMsg, 'error'); }
         saveState(); updateTaskCard(taskId);
+      } else if (j.code && j.code !== 200) {
+        const t = state.tasks.find(x => x.taskId === taskId); if (!t) return stopPolling(taskId);
+        t.status = 'failed';
+        t.errorMsg = j.msg || j.detail || '图片任务查询失败';
+        stopPolling(taskId);
+        saveState(); updateTaskCard(taskId);
+        showToast(t.errorMsg, 'error');
       }
-    } catch {}
+    } catch (e) {
+      const t = state.tasks.find(x => x.taskId === taskId); if (!t) return stopPolling(taskId);
+      t.pollErrorCount = (t.pollErrorCount || 0) + 1;
+      if (t.pollErrorCount >= 3) {
+        t.status = 'failed';
+        t.errorMsg = e.message || '图片任务查询失败';
+        stopPolling(taskId);
+        saveState(); updateTaskCard(taskId);
+        showToast(t.errorMsg, 'error');
+      }
+    }
   };
   poll(); state.pollers[taskId] = setInterval(poll, POLL_INTERVAL);
 }
@@ -348,6 +390,63 @@ function resumePolling() {
     if (t.type === 'image' && (t.status === 'queued' || t.status === 'running')) startImagePolling(t.taskId);
     if (t.type === 'video' && (t.status === 'queued' || t.status === 'running')) startVideoPolling(t.taskId);
   });
+}
+
+function setMode(mode, options = {}) {
+  state.mode = mode === 'video' ? 'video' : 'image';
+  const isVideo = state.mode === 'video';
+
+  dom.modeSwitch.querySelectorAll('[data-mode]').forEach(btn => {
+    const active = btn.dataset.mode === state.mode;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+
+  dom.imageModePanel.hidden = isVideo;
+  dom.imageActionPanel.hidden = isVideo;
+  dom.videoModePanel.hidden = !isVideo;
+  dom.videoActionPanel.hidden = !isVideo;
+  dom.imageModePanel.classList.toggle('active', !isVideo);
+  dom.imageActionPanel.classList.toggle('active', !isVideo);
+  dom.videoModePanel.classList.toggle('active', isVideo);
+  dom.videoActionPanel.classList.toggle('active', isVideo);
+
+  if (isVideo) {
+    if (Object.prototype.hasOwnProperty.call(options, 'refs')) {
+      state.videoRefImageUrls = normalizeVideoRefs(options.refs);
+      state.videoRefSource = options.source || 'task';
+    } else if (state.videoRefSource !== 'task') {
+      state.videoRefImageUrls = getUploadedImageUrls();
+      state.videoRefSource = 'uploads';
+    }
+    if (!dom.vdPrompt.value.trim() && state.videoRefImageUrls.length) {
+      dom.vdPrompt.value = '让@图1中的画面动起来';
+    }
+    renderVideoRefPreview();
+  } else {
+    state.videoRefSource = 'uploads';
+  }
+
+  updateReferenceText();
+}
+
+function updateReferenceText() {
+  if (state.mode === 'video') {
+    const meta = getVideoModelMeta();
+    dom.referenceTitle.textContent = '视频参考图';
+    dom.referenceSub.textContent = `(当前模型最多${meta.maxImages}张, 选填)`;
+    dom.imageTip.textContent = '💡 视频提示词中用 @图1、@图2 引用对应参考图';
+  } else {
+    dom.referenceTitle.textContent = '参考图片';
+    dom.referenceSub.textContent = '(最多8张, 选填)';
+    dom.imageTip.textContent = '💡 提示词中用"图片1""图片2"引用对应参考图';
+  }
+}
+
+function syncVideoRefsFromUploads() {
+  if (state.mode !== 'video' || state.videoRefSource === 'task') return;
+  state.videoRefImageUrls = getUploadedImageUrls();
+  renderVideoRefPreview();
 }
 
 // ======================= 视频生成 (PearAPI Grok) =======================
@@ -390,21 +489,21 @@ function renderVideoRefPreview() {
 }
 
 function openVideoDialog(imageRefs) {
-  state.videoRefImageUrls = normalizeVideoRefs(imageRefs);
-  renderVideoRefPreview();
-  dom.vdPrompt.value = state.videoRefImageUrls.length ? '让@图1中的画面动起来' : '';
-  dom.vdOverlay.classList.add('active');
+  setMode('video', { refs: imageRefs, source: 'task' });
+  dom.vdPrompt.value = state.videoRefImageUrls.length ? '让@图1中的画面动起来' : dom.vdPrompt.value;
+  document.getElementById('config-panel')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
 }
-function closeVideoDialog() { dom.vdOverlay.classList.remove('active'); }
 
 async function submitVideoTask() {
   const apiKey = dom.keyInput.value.trim();
   const prompt = dom.vdPrompt.value.trim();
   if (!apiKey) return showToast('请输入 PearAPI API Key', 'error');
   if (!prompt) return showToast('请输入视频提示词', 'error');
+  if (state.videoRefSource !== 'task' && state.uploadedImages.some(x => x.uploading)) return showToast('请等待参考图片上传完成', 'warning');
 
   const model = dom.vdModel.value;
   const meta = VIDEO_MODEL_META[model] || {};
+  if (state.videoRefSource !== 'task') state.videoRefImageUrls = getUploadedImageUrls();
   const imageUrls = getLimitedVideoRefs();
 
   const body = {
@@ -440,7 +539,6 @@ async function submitVideoTask() {
     };
     if (task.videoUrl) { task.status = 'completed'; task.progress = 100; }
     state.tasks.unshift(task); saveState(); renderTaskList();
-    closeVideoDialog();
     if (task.status === 'completed') showToast('视频生成完成！', 'success');
     else { startVideoPolling(task.taskId); showToast('视频任务已提交（异步）', 'success'); }
   } catch (e) {
@@ -464,6 +562,7 @@ function startVideoPolling(taskId) {
       const j = await r.json();
       if (j.code === 200 && j.data) {
         const t = state.tasks.find(x => x.taskId === taskId); if (!t) return stopPolling(taskId);
+        t.pollErrorCount = 0;
         t.status = j.data.status || t.status;
         t.progress = j.data.progress ?? t.progress;
         t.model = j.data.model || t.model;
@@ -480,8 +579,25 @@ function startVideoPolling(taskId) {
           showToast(t.errorMsg, 'error');
         }
         saveState(); updateTaskCard(taskId);
+      } else if (j.code && j.code !== 200) {
+        const t = state.tasks.find(x => x.taskId === taskId); if (!t) return stopPolling(taskId);
+        t.status = 'failed';
+        t.errorMsg = j.msg || j.detail || '视频任务查询失败';
+        stopPolling(taskId);
+        saveState(); updateTaskCard(taskId);
+        showToast(t.errorMsg, 'error');
       }
-    } catch {}
+    } catch (e) {
+      const t = state.tasks.find(x => x.taskId === taskId); if (!t) return stopPolling(taskId);
+      t.pollErrorCount = (t.pollErrorCount || 0) + 1;
+      if (t.pollErrorCount >= 3) {
+        t.status = 'failed';
+        t.errorMsg = e.message || '视频任务查询失败';
+        stopPolling(taskId);
+        saveState(); updateTaskCard(taskId);
+        showToast(t.errorMsg, 'error');
+      }
+    }
   };
   poll(); state.pollers[taskId] = setInterval(poll, POLL_INTERVAL);
 }

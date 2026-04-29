@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=20260429-4" />
 </head>
 <body>
   <canvas id="particles-canvas"></canvas>
@@ -53,35 +53,72 @@
           </button>
         </div>
 
+        <div class="mode-switch" id="mode-switch" role="tablist" aria-label="生成模式">
+          <button class="mode-btn active" type="button" data-mode="image" role="tab" aria-selected="true">
+            <span class="mode-icon">▧</span>
+            <span>生图</span>
+          </button>
+          <button class="mode-btn" type="button" data-mode="video" role="tab" aria-selected="false">
+            <span class="mode-icon">▶</span>
+            <span>生视频</span>
+          </button>
+        </div>
+
         <!-- 分隔 -->
         <hr class="config-divider" />
 
-        <!-- ===== 图片模型 ===== -->
-        <div class="form-group">
-          <label class="form-label" for="select-model">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon"><rect x="2" y="3" width="20" height="14" rx="2" ry="2" /><line x1="8" y1="21" x2="16" y2="21" /><line x1="12" y1="17" x2="12" y2="21" /></svg>
-            图片模型
-          </label>
-          <select id="select-model" class="form-select">
-            <optgroup label="Nano Banana 系列">
-              <option value="nano-banana-2-4k">2 4K (¥0.16 · 高速高分辨率)</option>
-              <option value="nano-banana-2" selected>2 (¥0.12 · 快速精准)</option>
-            </optgroup>
-          </select>
+        <div class="mode-panel active" id="image-mode-panel">
+          <!-- ===== 图片模型 ===== -->
+          <div class="form-group">
+            <label class="form-label" for="select-model">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon"><rect x="2" y="3" width="20" height="14" rx="2" ry="2" /><line x1="8" y1="21" x2="16" y2="21" /><line x1="12" y1="17" x2="12" y2="21" /></svg>
+              图片模型
+            </label>
+            <select id="select-model" class="form-select">
+              <optgroup label="Nano Banana 系列">
+                <option value="nano-banana-2-4k">2 4K (¥0.16 · 高速高分辨率)</option>
+                <option value="nano-banana-2" selected>2 (¥0.12 · 快速精准)</option>
+              </optgroup>
+            </select>
+          </div>
+
+          <!-- 图像尺寸 -->
+          <div class="form-group">
+            <label class="form-label">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon"><rect x="2" y="2" width="20" height="20" rx="2" ry="2" /><line x1="2" y1="12" x2="22" y2="12" /><line x1="12" y1="2" x2="12" y2="22" /></svg>
+              图像尺寸
+            </label>
+            <div class="ratio-group" id="ratio-group">
+              <button class="ratio-btn active" data-ratio="16:9" type="button"><div class="ratio-preview r-16-9"></div><span>16:9</span></button>
+              <button class="ratio-btn" data-ratio="9:16" type="button"><div class="ratio-preview r-9-16"></div><span>9:16</span></button>
+              <button class="ratio-btn" data-ratio="1:1" type="button"><div class="ratio-preview r-1-1"></div><span>1:1</span></button>
+              <button class="ratio-btn" data-ratio="4:3" type="button"><div class="ratio-preview r-4-3"></div><span>4:3</span></button>
+              <button class="ratio-btn" data-ratio="auto" type="button"><div class="ratio-preview r-auto">A</div><span>自动</span></button>
+            </div>
+          </div>
         </div>
 
-        <!-- 图像尺寸 -->
-        <div class="form-group">
-          <label class="form-label">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon"><rect x="2" y="2" width="20" height="20" rx="2" ry="2" /><line x1="2" y1="12" x2="22" y2="12" /><line x1="12" y1="2" x2="12" y2="22" /></svg>
-            图像尺寸
-          </label>
-          <div class="ratio-group" id="ratio-group">
-            <button class="ratio-btn active" data-ratio="16:9"><div class="ratio-preview r-16-9"></div><span>16:9</span></button>
-            <button class="ratio-btn" data-ratio="9:16"><div class="ratio-preview r-9-16"></div><span>9:16</span></button>
-            <button class="ratio-btn" data-ratio="1:1"><div class="ratio-preview r-1-1"></div><span>1:1</span></button>
-            <button class="ratio-btn" data-ratio="4:3"><div class="ratio-preview r-4-3"></div><span>4:3</span></button>
-            <button class="ratio-btn" data-ratio="auto"><div class="ratio-preview r-auto">A</div><span>自动</span></button>
+        <div class="mode-panel" id="video-mode-panel" hidden>
+          <!-- 视频模型 -->
+          <div class="form-group">
+            <label class="form-label" for="select-video-model">视频模型</label>
+            <select id="select-video-model" class="form-select">
+              <option value="grok-video-20s" selected>grok-video-20s (20秒 · ¥0.4)</option>
+              <option value="grok-video-16s">grok-video-16s (16秒 · ¥0.3)</option>
+              <option value="grok3-video">grok3-video (6秒 · ¥0.24)</option>
+              <option value="grok3-video-10s">grok3-video-10s (10秒 · ¥0.24)</option>
+            </select>
+          </div>
+          <!-- 比例 -->
+          <div class="form-group">
+            <label class="form-label" for="select-video-ratio">视频比例</label>
+            <select id="select-video-ratio" class="form-select">
+              <option value="16:9">16:9 横屏</option>
+              <option value="9:16">9:16 竖屏</option>
+              <option value="1:1">1:1 方形</option>
+              <option value="2:3">2:3</option>
+              <option value="3:2">3:2</option>
+            </select>
           </div>
         </div>
 
@@ -89,7 +126,7 @@
         <div class="form-group">
           <label class="form-label">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>
-            参考图片 <span class="label-sub">(最多8张, 选填)</span>
+            <span id="reference-title">参考图片</span> <span class="label-sub" id="reference-sub">(最多8张, 选填)</span>
           </label>
           <div class="image-drop-zone" id="image-drop-zone">
             <input type="file" id="image-file-input" accept="image/*" multiple hidden />
@@ -101,23 +138,35 @@
           <p class="image-tip" id="image-tip" style="display:none">💡 提示词中用"图片1""图片2"引用对应参考图</p>
         </div>
 
-        <!-- 提示词 -->
-        <div class="form-group">
-          <label class="form-label" for="input-prompt">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon"><line x1="17" y1="10" x2="3" y2="10" /><line x1="21" y1="6" x2="3" y2="6" /><line x1="21" y1="14" x2="3" y2="14" /><line x1="17" y1="18" x2="3" y2="18" /></svg>
-            提示词
-          </label>
-          <textarea id="input-prompt" class="form-textarea" rows="5" placeholder="描述你想要生成的图片内容..."></textarea>
-          <div class="char-count"><span id="char-count">0</span> 字</div>
-        </div>
+        <div class="mode-panel active" id="image-action-panel">
+          <!-- 提示词 -->
+          <div class="form-group">
+            <label class="form-label" for="input-prompt">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="label-icon"><line x1="17" y1="10" x2="3" y2="10" /><line x1="21" y1="6" x2="3" y2="6" /><line x1="21" y1="14" x2="3" y2="14" /><line x1="17" y1="18" x2="3" y2="18" /></svg>
+              图片提示词
+            </label>
+            <textarea id="input-prompt" class="form-textarea" rows="5" placeholder="描述你想要生成的图片内容..."></textarea>
+            <div class="char-count"><span id="char-count">0</span> 字</div>
+          </div>
 
-        <!-- 生成按钮组 -->
-        <div class="btn-group">
           <button class="btn-submit" id="btn-submit">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon-svg"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>
             <span>生成图片</span>
           </button>
-          <button class="btn-submit btn-video-submit" id="btn-open-video-dialog">
+        </div>
+
+        <div class="mode-panel" id="video-action-panel" hidden>
+          <div class="vdialog-ref" id="vdialog-ref">
+            <div class="vdialog-ref-list" id="vdialog-ref-list"></div>
+            <div class="vdialog-ref-label" id="vdialog-ref-label">参考图</div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="input-video-prompt">视频提示词</label>
+            <textarea id="input-video-prompt" class="form-textarea" rows="4" placeholder="描述视频画面动态...用 @图1 引用参考图">让@图1中的画面动起来</textarea>
+          </div>
+
+          <button class="btn-submit btn-video-submit" id="btn-submit-video">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon-svg"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" ry="2" /></svg>
             <span>生成视频</span>
           </button>
@@ -180,63 +229,6 @@
     </div>
   </div>
 
-  <!-- ==================== 视频生成对话框 ==================== -->
-  <div class="vdialog-overlay" id="vdialog-overlay">
-    <div class="vdialog">
-      <div class="vdialog-header">
-        <h3>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="panel-icon"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" ry="2" /></svg>
-          从图片生成视频
-        </h3>
-        <button class="modal-close" id="vdialog-close">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-        </button>
-      </div>
-      <div class="vdialog-body">
-        <!-- 参考图预览 -->
-        <div class="vdialog-ref" id="vdialog-ref">
-          <div class="vdialog-ref-list" id="vdialog-ref-list"></div>
-          <div class="vdialog-ref-label" id="vdialog-ref-label">参考图</div>
-        </div>
-
-        <div class="vdialog-grid">
-          <!-- 视频模型 -->
-          <div class="form-group">
-            <label class="form-label">视频模型</label>
-            <select id="select-video-model" class="form-select">
-              <option value="grok-video-20s" selected>grok-video-20s (20秒 · ¥0.4)</option>
-              <option value="grok-video-16s">grok-video-16s (16秒 · ¥0.3)</option>
-              <option value="grok3-video">grok3-video (6秒 · ¥0.24)</option>
-              <option value="grok3-video-10s">grok3-video-10s (10秒 · ¥0.24)</option>
-            </select>
-          </div>
-          <!-- 比例 -->
-          <div class="form-group">
-            <label class="form-label">画面比例</label>
-            <select id="select-video-ratio" class="form-select">
-              <option value="16:9">16:9 横屏</option>
-              <option value="9:16">9:16 竖屏</option>
-              <option value="1:1">1:1 方形</option>
-              <option value="2:3">2:3</option>
-              <option value="3:2">3:2</option>
-            </select>
-          </div>
-        </div>
-
-        <!-- 视频提示词 -->
-        <div class="form-group">
-          <label class="form-label">视频提示词</label>
-          <textarea id="input-video-prompt" class="form-textarea" rows="3" placeholder="描述视频画面动态...用 @图一 引用参考图">让@图一中的画面动起来</textarea>
-        </div>
-
-        <button class="btn-submit btn-video-submit" id="btn-submit-video">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon-svg"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" ry="2" /></svg>
-          <span>开始生成视频</span>
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <script src="app.js"></script>
+  <script src="app.js?v=20260429-4"></script>
 </body>
 </html>
