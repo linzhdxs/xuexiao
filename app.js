@@ -300,17 +300,19 @@ function bindEvents() {
 
 // ======================= 额度查询 =======================
 async function queryQuota(type) {
-  let key, btn, disp, url;
+  let key, btn, disp, url, options;
   if (type === 'pear') {
     key = dom.pearKeyInput.value.trim();
     btn = dom.queryPearBtn;
     disp = dom.pearQuotaDisp;
     url = `${PEAR_API_BASE}/system/auth/user-keys/quota?key=${encodeURIComponent(key)}`;
+    options = {};
   } else {
     key = dom.geekKeyInput.value.trim();
     btn = dom.queryGeekBtn;
     disp = dom.geekQuotaDisp;
-    url = `${GEEK_API_BASE}/system/auth/user-keys/quota?key=${encodeURIComponent(key)}`;
+    url = `${GEEK_API_BASE}/v1/dashboard/billing/subscription`;
+    options = { headers: { 'Authorization': `Bearer ${key}` } };
   }
   
   if (!key) return showToast('请输入 API Key', 'warning');
@@ -318,11 +320,13 @@ async function queryQuota(type) {
   setSubmitLoading(btn, true, '查询中...');
   disp.style.display = 'none';
   try {
-    const r = await fetch(url);
+    const r = await fetch(url, options);
     const j = await r.json();
-    if (j.code === 200 || j.data !== undefined) {
+    if (j.code === 200 || j.data !== undefined || j.object === 'billing_subscription' || j.hard_limit_usd !== undefined) {
       let quotaInfo = '';
-      if (typeof j.data === 'object' && j.data !== null) {
+      if (j.object === 'billing_subscription') {
+        quotaInfo = j.hard_limit_usd !== undefined ? j.hard_limit_usd : j.balance;
+      } else if (typeof j.data === 'object' && j.data !== null) {
         quotaInfo = j.data.quota_balance !== undefined ? j.data.quota_balance : (j.data.quota !== undefined ? j.data.quota : (j.data.balance !== undefined ? j.data.balance : JSON.stringify(j.data)));
       } else {
         quotaInfo = j.data;
