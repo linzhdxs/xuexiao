@@ -297,8 +297,10 @@ function bindEvents() {
       loadTasksForCurrentKey(); renderTaskList(); resumePolling();
     }, 400);
   };
-  dom.keyInput.addEventListener('input', reloadOnKeyChange);
-  dom.keyInput.addEventListener('change', reloadOnKeyChange);
+  dom.pearKeyInput.addEventListener('input', reloadOnKeyChange);
+  dom.pearKeyInput.addEventListener('change', reloadOnKeyChange);
+  dom.geekKeyInput.addEventListener('input', reloadOnKeyChange);
+  dom.geekKeyInput.addEventListener('change', reloadOnKeyChange);
 }
 
 // ======================= 额度查询 =======================
@@ -418,7 +420,7 @@ function getUploadedImageUrls() {
 const SYNC_ONLY_MODELS = ['nano-banana-pro', 'nano-banana-pro-4k'];
 
 async function submitImageTask() {
-  const key = dom.keyInput.value.trim();
+  const key = dom.pearKeyInput.value.trim();
   const prompt = dom.promptInput.value.trim();
   const model = dom.modelSelect.value;
   if (!key) return showToast('请输入 PearAPI API Key', 'error');
@@ -458,7 +460,7 @@ async function submitImageTask() {
 function startImagePolling(taskId) {
   if (state.pollers[taskId]) return;
   const poll = async () => {
-    const key = dom.keyInput.value.trim(); if (!key) return;
+    const key = dom.pearKeyInput.value.trim(); if (!key) return;
     try {
       const r = await fetch(IMAGE_API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, task_id: taskId }) });
       const j = await r.json();
