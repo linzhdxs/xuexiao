@@ -3,16 +3,22 @@
    ============================================ */
 
 const PEAR_API_BASE = 'https://api.pearapi.ai';
+const GEEK_API_BASE = 'https://api.geeknow.top';
 const IMAGE_API = `${PEAR_API_BASE}/api/image_generate`;
 const VIDEO_API = `${PEAR_API_BASE}/api/video_generate`;
+const GEEK_VIDEO_API = `${GEEK_API_BASE}/v1/videos`;
 const IMGBB_KEY = 'c2d0c798539d2dab9107049c7f544d1d';
 const POLL_INTERVAL = 5000;
 const ASSET_VERSION = '20260429-4';
 const VIDEO_MODEL_META = {
-  'grok-video-20s': { seconds: 20, maxImages: 5, label: 'Grok Video 20s' },
-  'grok-video-16s': { seconds: 16, maxImages: 5, label: 'Grok Video 16s' },
-  'grok3-video': { seconds: 6, maxImages: 1, label: 'Grok 3 Video' },
-  'grok3-video-10s': { seconds: 10, maxImages: 1, label: 'Grok 3 Video 10s' },
+  'gemini-omni-1080-10s': { seconds: 10, maxImages: 3, label: 'Gemini Omni 1080 10s' },
+  'sora-2-12s': { seconds: 12, maxImages: 1, label: 'Sora 2 12s' },
+  'veo-3.1-fast': { seconds: 5, maxImages: 2, label: 'Veo 3.1 Fast' },
+  'grok-video-3': { seconds: 5, maxImages: 6, label: 'Grok Video 3', isGeek: true },
+  'grok-video-3-pro': { seconds: 10, maxImages: 6, label: 'Grok Video 3 Pro', isGeek: true },
+  'grok-video-3-max': { seconds: 15, maxImages: 6, label: 'Grok Video 3 Max', isGeek: true },
+  'omni-fast': { seconds: 10, maxImages: 5, label: 'Omni Fast', isGeek: true },
+  'omni-fast-v2v': { seconds: 10, maxImages: 1, label: 'Omni Fast V2V', isGeek: true },
 };
 
 function getVideoUrl(data) {
@@ -40,9 +46,21 @@ const state = {
 const dom = {};
 function cacheDom() {
   Object.assign(dom, {
-    // 图片 API
-    keyInput:       document.getElementById('input-key'),
-    toggleKey:      document.getElementById('btn-toggle-key'),
+    // 设置与 API
+    openSettingsBtn: document.getElementById('btn-open-settings'),
+    settingsModal:   document.getElementById('settings-modal-overlay'),
+    settingsClose:   document.getElementById('settings-modal-close'),
+    saveSettingsBtn: document.getElementById('btn-save-settings'),
+
+    pearKeyInput:    document.getElementById('input-pear-key'),
+    togglePearKey:   document.getElementById('btn-toggle-pear-key'),
+    queryPearBtn:    document.getElementById('btn-query-pear-quota'),
+    pearQuotaDisp:   document.getElementById('pear-quota-display'),
+
+    geekKeyInput:    document.getElementById('input-geek-key'),
+    toggleGeekKey:   document.getElementById('btn-toggle-geek-key'),
+    queryGeekBtn:    document.getElementById('btn-query-geek-quota'),
+    geekQuotaDisp:   document.getElementById('geek-quota-display'),
     // 图片生成控件
     modelSelect:    document.getElementById('select-model'),
     ratioGroup:     document.getElementById('ratio-group'),
@@ -64,6 +82,7 @@ function cacheDom() {
     taskList:       document.getElementById('task-list'),
     taskCount:      document.getElementById('task-count'),
     emptyState:     document.getElementById('empty-state'),
+    btnMockData:    document.getElementById('btn-mock-data'),
     // 图片模态框
     modalOverlay:   document.getElementById('modal-overlay'),
     modalImage:     document.getElementById('modal-image'),
@@ -98,11 +117,13 @@ function init() {
     alert(msg);
     return;
   }
-  loadState();
-  document.documentElement.dataset.appVersion = ASSET_VERSION;
   bindEvents();
-  setMode(state.mode);
+  loadState();
   initParticles();
+  window.addEventListener('resize', initParticles);
+  updateReferenceText();
+  renderVideoRefPreview();
+  setMode(state.mode);
   renderTaskList();
   resumePolling();
 }
@@ -114,31 +135,42 @@ function hashKey(key) {
   return Math.abs(h).toString(36);
 }
 function getTasksStorageKey() {
-  const k = dom.keyInput.value.trim();
+  const k = dom.pearKeyInput ? dom.pearKeyInput.value.trim() : '';
   return k ? 'gen_tasks_' + hashKey(k) : 'gen_tasks_default';
 }
 function saveState() {
   try {
-    localStorage.setItem('gen_key', dom.keyInput.value);
+    localStorage.setItem('gen_pear_key', dom.pearKeyInput.value);
+    localStorage.setItem('gen_geek_key', dom.geekKeyInput.value);
     localStorage.setItem(getTasksStorageKey(), JSON.stringify(state.tasks));
+    if (dom.modelSelect.value) localStorage.setItem('gen_image_model', dom.modelSelect.value);
+    if (dom.vdModel.value) localStorage.setItem('gen_video_model', dom.vdModel.value);
   } catch {}
 }
 function loadState() {
   try {
-    const k = localStorage.getItem('gen_key');
-    const legacyVideoKey = localStorage.getItem('gen_video_key');
-    if (k) dom.keyInput.value = k;
-    else if (legacyVideoKey) {
-      dom.keyInput.value = legacyVideoKey;
-      localStorage.setItem('gen_key', legacyVideoKey);
+    const pk = localStorage.getItem('gen_pear_key');
+    const gk = localStorage.getItem('gen_geek_key');
+    const legacyKey = localStorage.getItem('gen_key');
+    
+    if (pk) dom.pearKeyInput.value = pk;
+    else if (legacyKey) {
+      dom.pearKeyInput.value = legacyKey;
+      localStorage.setItem('gen_pear_key', legacyKey);
     }
+    if (gk) dom.geekKeyInput.value = gk;
+    
+    const savedImageModel = localStorage.getItem('gen_image_model');
+    if (savedImageModel) dom.modelSelect.value = savedImageModel;
+    const savedVideoModel = localStorage.getItem('gen_video_model');
+    if (savedVideoModel) dom.vdModel.value = savedVideoModel;
     migrateOldTasks();
     localStorage.removeItem('gen_video_key');
     loadTasksForCurrentKey();
   } catch {}
 }
 function migrateOldTasks() {
-  const ik = dom.keyInput.value.trim();
+  const ik = dom.pearKeyInput.value.trim();
   const vk = (localStorage.getItem('gen_video_key') || '').trim();
   const hImg = ik ? hashKey(ik) : '';
   // 固定旧键 + 各版本哈希键
@@ -175,8 +207,31 @@ function loadTasksForCurrentKey() {
 
 // ======================= 事件绑定 =======================
 function bindEvents() {
+  // 设置显隐
+  if (dom.openSettingsBtn) {
+    dom.openSettingsBtn.addEventListener('click', () => { dom.settingsModal.classList.add('active'); });
+  }
+  if (dom.settingsClose) {
+    dom.settingsClose.addEventListener('click', () => { dom.settingsModal.classList.remove('active'); });
+  }
+  if (dom.btnMockData) {
+    dom.btnMockData.addEventListener('click', generateMockTasks);
+  }
+  if (dom.saveSettingsBtn) {
+    dom.saveSettingsBtn.addEventListener('click', () => {
+      saveState();
+      dom.settingsModal.classList.remove('active');
+      showToast('设置已保存', 'success');
+    });
+  }
+
   // Key 显隐
-  dom.toggleKey.addEventListener('click', () => { dom.keyInput.type = dom.keyInput.type === 'password' ? 'text' : 'password'; });
+  if (dom.togglePearKey) dom.togglePearKey.addEventListener('click', () => { dom.pearKeyInput.type = dom.pearKeyInput.type === 'password' ? 'text' : 'password'; });
+  if (dom.toggleGeekKey) dom.toggleGeekKey.addEventListener('click', () => { dom.geekKeyInput.type = dom.geekKeyInput.type === 'password' ? 'text' : 'password'; });
+  
+  // 额度查询
+  if (dom.queryPearBtn) dom.queryPearBtn.addEventListener('click', () => queryQuota('pear'));
+  if (dom.queryGeekBtn) dom.queryGeekBtn.addEventListener('click', () => queryQuota('geek'));
 
   // 字数
   dom.promptInput.addEventListener('input', () => { dom.charCount.textContent = dom.promptInput.value.length; });
@@ -223,7 +278,8 @@ function bindEvents() {
   dom.videoModalClose.addEventListener('click', closeVideoModal);
   dom.videoModalOverlay.addEventListener('click', (e) => { if (e.target === dom.videoModalOverlay) closeVideoModal(); });
 
-  dom.vdModel.addEventListener('change', () => { updateReferenceText(); renderVideoRefPreview(); });
+  dom.modelSelect.addEventListener('change', saveState);
+  dom.vdModel.addEventListener('change', () => { saveState(); updateReferenceText(); renderVideoRefPreview(); });
 
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeImageModal(); closeVideoModal(); } });
 
@@ -240,6 +296,50 @@ function bindEvents() {
   };
   dom.keyInput.addEventListener('input', reloadOnKeyChange);
   dom.keyInput.addEventListener('change', reloadOnKeyChange);
+}
+
+// ======================= 额度查询 =======================
+async function queryQuota(type) {
+  let key, btn, disp, url;
+  if (type === 'pear') {
+    key = dom.pearKeyInput.value.trim();
+    btn = dom.queryPearBtn;
+    disp = dom.pearQuotaDisp;
+    url = `${PEAR_API_BASE}/system/auth/user-keys/quota?key=${encodeURIComponent(key)}`;
+  } else {
+    key = dom.geekKeyInput.value.trim();
+    btn = dom.queryGeekBtn;
+    disp = dom.geekQuotaDisp;
+    url = `${GEEK_API_BASE}/system/auth/user-keys/quota?key=${encodeURIComponent(key)}`;
+  }
+  
+  if (!key) return showToast('请输入 API Key', 'warning');
+  
+  setSubmitLoading(btn, true, '查询中...');
+  disp.style.display = 'none';
+  try {
+    const r = await fetch(url);
+    const j = await r.json();
+    if (j.code === 200 || j.data !== undefined) {
+      let quotaInfo = '';
+      if (typeof j.data === 'object' && j.data !== null) {
+        quotaInfo = j.data.quota_balance !== undefined ? j.data.quota_balance : (j.data.quota !== undefined ? j.data.quota : (j.data.balance !== undefined ? j.data.balance : JSON.stringify(j.data)));
+      } else {
+        quotaInfo = j.data;
+      }
+      disp.textContent = `当前可用额度: ${quotaInfo}`;
+      disp.style.display = 'block';
+      showToast('额度查询成功', 'success');
+    } else {
+      throw new Error(j.msg || j.detail || j.message || '查询失败');
+    }
+  } catch (e) {
+    showToast(e.message, 'error');
+    disp.textContent = `查询失败: ${e.message}`;
+    disp.style.display = 'block';
+  } finally {
+    setSubmitLoading(btn, false, '查询额度');
+  }
 }
 
 // ======================= ImgBB 上传 =======================
@@ -495,47 +595,84 @@ function openVideoDialog(imageRefs) {
 }
 
 async function submitVideoTask() {
-  const apiKey = dom.keyInput.value.trim();
   const prompt = dom.vdPrompt.value.trim();
-  if (!apiKey) return showToast('请输入 PearAPI API Key', 'error');
+  const model = dom.vdModel.value;
+  const meta = VIDEO_MODEL_META[model] || {};
+  const isGeek = !!meta.isGeek;
+  const apiKey = isGeek ? dom.geekKeyInput.value.trim() : dom.pearKeyInput.value.trim();
+  
+  if (!apiKey) return showToast(`请输入 ${isGeek ? 'GeekAPI' : 'PearAPI'} API Key`, 'error');
   if (!prompt) return showToast('请输入视频提示词', 'error');
   if (state.videoRefSource !== 'task' && state.uploadedImages.some(x => x.uploading)) return showToast('请等待参考图片上传完成', 'warning');
 
-  const model = dom.vdModel.value;
-  const meta = VIDEO_MODEL_META[model] || {};
   if (state.videoRefSource !== 'task') state.videoRefImageUrls = getUploadedImageUrls();
   const imageUrls = getLimitedVideoRefs();
 
-  const body = {
-    key: apiKey,
-    prompt,
-    model,
-    aspect_ratio: dom.vdRatio.value,
-  };
-  if (imageUrls.length) body.images = imageUrls;
-
-  setSubmitLoading(dom.vdSubmit, true, '生成中...');
-  try {
-    const resp = await fetch(VIDEO_API, {
+  let reqUrl, reqOptions;
+  if (isGeek) {
+    reqUrl = GEEK_VIDEO_API;
+    const isGrok = model.includes('grok');
+    if (isGrok) {
+      const fd = new FormData();
+      fd.append('model', model);
+      fd.append('prompt', prompt);
+      fd.append('aspect_ratio', dom.vdRatio.value);
+      if (meta.seconds) fd.append('seconds', meta.seconds);
+      imageUrls.forEach(url => fd.append('input_reference', url));
+      reqOptions = {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+        body: fd
+      };
+    } else {
+      const body = { model, prompt, aspect_ratio: dom.vdRatio.value };
+      if (meta.seconds) body.seconds = meta.seconds;
+      if (imageUrls.length === 1) body.first_image_url = imageUrls[0];
+      else if (imageUrls.length === 2) { body.first_image_url = imageUrls[0]; body.last_image_url = imageUrls[1]; }
+      else if (imageUrls.length > 2) body.images = imageUrls;
+      reqOptions = {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      };
+    }
+  } else {
+    reqUrl = VIDEO_API;
+    const body = { key: apiKey, prompt, model, aspect_ratio: dom.vdRatio.value };
+    if (imageUrls.length) body.images = imageUrls;
+    reqOptions = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    });
+    };
+  }
+
+  setSubmitLoading(dom.vdSubmit, true, '生成中...');
+  try {
+    const resp = await fetch(reqUrl, reqOptions);
     const json = await resp.json();
-    if (json.code !== 200 || !json.data?.task_id) throw new Error(json.msg || json.detail || JSON.stringify(json));
+    let taskId = '';
+    if (isGeek) {
+      if (json.id || json.task_id) taskId = json.id || json.task_id;
+      else throw new Error(json.error?.message || json.msg || JSON.stringify(json));
+    } else {
+      if (json.code !== 200 || !json.data?.task_id) throw new Error(json.msg || json.detail || JSON.stringify(json));
+      taskId = json.data.task_id;
+    }
 
     const task = {
-      type: 'video', id: Date.now(), taskId: json.data.task_id,
-      status: json.data.status || 'queued',
-      progress: json.data.progress || 0,
-      model: json.data.model || model, prompt,
-      videoUrl: getVideoUrl(json.data),
+      type: 'video', id: Date.now(), taskId: taskId,
+      status: (isGeek ? json.status : json.data?.status) || 'queued',
+      progress: (isGeek ? json.progress : json.data?.progress) || 0,
+      model: model, prompt,
+      videoUrl: getVideoUrl(isGeek ? json : json.data),
       imageRef: imageUrls[0] || null,
       imageRefs: imageUrls,
       errorMsg: null,
       videoLength: meta.seconds || '',
       videoRatio: dom.vdRatio.value,
       createdAt: now(),
+      isGeek: isGeek
     };
     if (task.videoUrl) { task.status = 'completed'; task.progress = 100; }
     state.tasks.unshift(task); saveState(); renderTaskList();
@@ -552,37 +689,55 @@ async function submitVideoTask() {
 function startVideoPolling(taskId) {
   if (state.pollers[taskId]) return;
   const poll = async () => {
-    const key = dom.keyInput.value.trim(); if (!key) return;
+    const t = state.tasks.find(x => x.taskId === taskId); if (!t) return stopPolling(taskId);
+    let key, reqUrl, reqOptions;
+    if (t.isGeek) {
+      key = dom.geekKeyInput.value.trim(); if (!key) return;
+      reqUrl = `${GEEK_VIDEO_API}/${taskId}`;
+      reqOptions = { method: 'GET', headers: { 'Authorization': `Bearer ${key}` } };
+    } else {
+      key = dom.pearKeyInput.value.trim(); if (!key) return;
+      reqUrl = VIDEO_API;
+      reqOptions = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, taskid: taskId }) };
+    }
+
     try {
-      const r = await fetch(VIDEO_API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key, taskid: taskId }),
-      });
+      const r = await fetch(reqUrl, reqOptions);
       const j = await r.json();
-      if (j.code === 200 && j.data) {
-        const t = state.tasks.find(x => x.taskId === taskId); if (!t) return stopPolling(taskId);
+      
+      let isSuccess = false;
+      let data = null;
+      let errorMsg = '';
+      if (t.isGeek) {
+        if (!j.error && j.status) { isSuccess = true; data = j; }
+        else { errorMsg = j.error?.message || '视频任务查询失败'; }
+      } else {
+        if (j.code === 200 && j.data) { isSuccess = true; data = j.data; }
+        else { errorMsg = j.msg || j.detail || '视频任务查询失败'; }
+      }
+
+      if (isSuccess && data) {
         t.pollErrorCount = 0;
-        t.status = j.data.status || t.status;
-        t.progress = j.data.progress ?? t.progress;
-        t.model = j.data.model || t.model;
-        t.videoUrl = getVideoUrl(j.data) || t.videoUrl;
+        t.status = data.status || t.status;
+        t.progress = data.progress ?? t.progress;
+        t.model = data.model || t.model;
+        t.videoUrl = getVideoUrl(data) || t.videoUrl;
         if (t.status === 'completed') {
           t.progress = 100;
           stopPolling(taskId);
+          if (t.isGeek && !t.videoUrl) t.videoUrl = `${GEEK_VIDEO_API}/${taskId}/content`;
           if (!t.videoUrl) t.errorMsg = '视频已完成，但未返回视频地址';
           showToast(t.videoUrl ? '视频生成完成！' : '视频生成完成但未返回地址', t.videoUrl ? 'success' : 'warning');
         }
         if (t.status === 'failed') {
-          t.errorMsg = j.data.error?.message || j.detail || j.msg || '视频任务失败';
+          t.errorMsg = data.error?.message || j.detail || j.msg || '视频任务失败';
           stopPolling(taskId);
           showToast(t.errorMsg, 'error');
         }
         saveState(); updateTaskCard(taskId);
-      } else if (j.code && j.code !== 200) {
-        const t = state.tasks.find(x => x.taskId === taskId); if (!t) return stopPolling(taskId);
+      } else {
         t.status = 'failed';
-        t.errorMsg = j.msg || j.detail || '视频任务查询失败';
+        t.errorMsg = errorMsg || '视频任务查询失败';
         stopPolling(taskId);
         saveState(); updateTaskCard(taskId);
         showToast(t.errorMsg, 'error');
@@ -647,9 +802,9 @@ function buildTaskCard(t) {
   let actionsHTML = '';
   if (!isVideo && t.status === 'completed' && t.imageUrls?.length) {
     actionsHTML += t.imageUrls.map((u, i) => `
-      <button class="btn-task-action" data-action="gen-video" data-url="${u}" title="用此图生成视频">🎬 生成视频</button>
+      <button class="btn-task-action" data-action="gen-video" data-url="${u}" title="用图${i+1}生成视频">🎬 生视频(图${i+1})</button>
     `).join('');
-    actionsHTML += `<button class="btn-task-action primary" data-action="preview-image" data-url="${t.imageUrls[0]}">👁 查看</button>`;
+    actionsHTML += `<button class="btn-task-action primary" data-action="preview-image" data-url="${t.imageUrls[0]}">👁 查看全部</button>`;
   }
   if (isVideo && t.status === 'completed' && t.videoUrl) {
     actionsHTML += `<button class="btn-task-action primary" data-action="play-video" data-url="${t.videoUrl}">▶ 播放</button>`;
@@ -737,3 +892,44 @@ function initParticles() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+function generateMockTasks() {
+  // 点击后如果已经有 mock 任务就先清理掉，重新生成 9 个
+  state.tasks = state.tasks.filter(t => !(t.taskId && t.taskId.startsWith('mock-task')));
+  const models = ['gemini-omni-1080-10s', 'sora-2-12s', 'veo-3.1-fast', 'grok-video-3', 'omni-fast', 'nano-banana-2'];
+  const prompts = [
+    '一只赛博朋克风格的机器猫穿梭在霓虹闪烁的东京街头',
+    '火星基地的日出，宇航员正在采矿',
+    '一杯正在拉花的咖啡，热气腾腾',
+    '史诗级的雪山航拍，气势磅礴',
+    '微观镜头下的水滴溅起瞬间',
+    '可爱的小狗在草地上奔跑追逐飞盘',
+    '充满未来科技感的飞行汽车穿过云层',
+    '深海中发光的水母群缓慢游动',
+    '一幅印象派风格的向日葵画作逐渐变为真实画面'
+  ];
+  for (let i = 0; i < 9; i++) {
+    const isVideo = i !== 5; // 让其中一个是图片任务
+    const model = isVideo ? models[i % 5] : models[5];
+    const task = {
+      type: isVideo ? 'video' : 'image',
+      id: Date.now() - i * 10000,
+      taskId: 'mock-task-' + (i + 1),
+      status: i === 0 ? 'running' : (i % 3 === 2 ? 'failed' : 'completed'),
+      progress: i === 0 ? 45 : (i % 3 === 2 ? 0 : 100),
+      model: model,
+      prompt: prompts[i],
+      videoUrl: (i !== 5 && i % 3 !== 2) ? 'https://www.w3schools.com/html/mov_bbb.mp4' : null,
+      imageUrls: (!isVideo && i % 3 !== 2) ? ['https://picsum.photos/400/300?1', 'https://picsum.photos/400/300?2'] : [],
+      errorMsg: (i % 3 === 2) ? '连接超时，生成失败。' : null,
+      videoLength: isVideo ? '10' : '',
+      videoRatio: '16:9',
+      createdAt: new Date(Date.now() - i * 60000).toLocaleString(),
+      isGeek: i === 3 || i === 4
+    };
+    state.tasks.unshift(task);
+  }
+  saveState();
+  renderTaskList();
+  showToast('已生成9条模拟数据', 'success');
+}

@@ -674,8 +674,8 @@ body {
 
 /* ---------- 任务卡片 ---------- */
 .task-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
 }
 
@@ -1317,6 +1317,13 @@ body {
 
   .top-bar {
     padding: 0 16px;
+  .task-list {
+    grid-template-columns: 1fr;
   }
+}
 
+@media (max-width: 1400px) and (min-width: 901px) {
+  .task-list {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
