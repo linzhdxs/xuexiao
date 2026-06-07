@@ -9,7 +9,7 @@ const VIDEO_API = `${PEAR_API_BASE}/api/video_generate`;
 const GEEK_VIDEO_API = `${GEEK_API_BASE}/v1/videos`;
 const IMGBB_KEY = 'c2d0c798539d2dab9107049c7f544d1d';
 const POLL_INTERVAL = 5000;
-const ASSET_VERSION = '20260429-4';
+const ASSET_VERSION = '20260607-1';
 const VIDEO_MODEL_META = {
   'gemini-omni-1080-10s': { seconds: 10, maxImages: 3, label: 'Gemini Omni 1080 10s' },
   'sora-2-12s': { seconds: 12, maxImages: 1, label: 'Sora 2 12s' },
