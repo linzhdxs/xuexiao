@@ -9,7 +9,7 @@ const VIDEO_API = `${PEAR_API_BASE}/api/video_generate`;
 const GEEK_VIDEO_API = `${GEEK_API_BASE}/v1/videos`;
 const IMGBB_KEY = 'c2d0c798539d2dab9107049c7f544d1d';
 const POLL_INTERVAL = 5000;
-const ASSET_VERSION = '20260607-1';
+const ASSET_VERSION = '20260607-5';
 const VIDEO_MODEL_META = {
   'gemini-omni-1080-10s': { seconds: 10, maxImages: 3, label: 'Gemini Omni 1080 10s' },
   'sora-2-12s': { seconds: 12, maxImages: 1, label: 'Sora 2 12s' },
@@ -635,7 +635,7 @@ async function submitVideoTask() {
       };
     } else {
       const body = { model, prompt, aspect_ratio: dom.vdRatio.value };
-      if (meta.seconds) body.seconds = meta.seconds;
+      if (meta.seconds) body.seconds = String(meta.seconds);
       if (imageUrls.length === 1) body.first_image_url = imageUrls[0];
       else if (imageUrls.length === 2) { body.first_image_url = imageUrls[0]; body.last_image_url = imageUrls[1]; }
       else if (imageUrls.length > 2) body.images = imageUrls;
@@ -795,7 +795,7 @@ function buildTaskCard(t) {
 
   let mediaHTML = '';
   if (isVideo && t.status === 'completed' && t.videoUrl) {
-    mediaHTML = `<div class="task-video-area"><video src="${t.videoUrl}" class="task-video-thumb" muted data-action="play-video" data-url="${t.videoUrl}" title="点击播放"></video></div>`;
+    mediaHTML = `<div class="task-video-area"><video src="${t.videoUrl}#t=0.001" preload="metadata" class="task-video-thumb" muted data-action="play-video" data-url="${t.videoUrl}" title="点击播放"></video></div>`;
   } else if (!isVideo && t.imageUrls?.length) {
     mediaHTML = `<div class="task-thumb-area">${t.imageUrls.map((u, i) => `<img src="${u}" alt="图片${i+1}" class="task-thumb" data-action="preview-image" data-url="${u}" title="点击预览" />`).join('')}</div>`;
   }
