@@ -135,8 +135,10 @@ function hashKey(key) {
   return Math.abs(h).toString(36);
 }
 function getTasksStorageKey() {
-  const k = dom.pearKeyInput ? dom.pearKeyInput.value.trim() : '';
-  return k ? 'gen_tasks_' + hashKey(k) : 'gen_tasks_default';
+  const pk = dom.pearKeyInput ? dom.pearKeyInput.value.trim() : '';
+  const gk = dom.geekKeyInput ? dom.geekKeyInput.value.trim() : '';
+  const combined = pk + '|' + gk;
+  return (pk || gk) ? 'gen_tasks_' + hashKey(combined) : 'gen_tasks_default';
 }
 function saveState() {
   try {
@@ -145,7 +147,8 @@ function saveState() {
     localStorage.setItem(getTasksStorageKey(), JSON.stringify(state.tasks));
     if (dom.modelSelect.value) localStorage.setItem('gen_image_model', dom.modelSelect.value);
     if (dom.vdModel.value) localStorage.setItem('gen_video_model', dom.vdModel.value);
-  } catch {}
+    if (state.mode) localStorage.setItem('gen_mode', state.mode);
+  } catch (e) { console.error('保存数据失败:', e); }
 }
 function loadState() {
   try {
@@ -164,34 +167,31 @@ function loadState() {
     if (savedImageModel) dom.modelSelect.value = savedImageModel;
     const savedVideoModel = localStorage.getItem('gen_video_model');
     if (savedVideoModel) dom.vdModel.value = savedVideoModel;
+    const savedMode = localStorage.getItem('gen_mode');
+    if (savedMode) state.mode = savedMode;
+    
     migrateOldTasks();
     localStorage.removeItem('gen_video_key');
     loadTasksForCurrentKey();
   } catch {}
 }
 function migrateOldTasks() {
-  const ik = dom.pearKeyInput.value.trim();
-  const vk = (localStorage.getItem('gen_video_key') || '').trim();
-  const hImg = ik ? hashKey(ik) : '';
-  // 固定旧键 + 各版本哈希键
-  const sources = [
-    'video_gen_tasks', 'video_gen_tasks_default',
-    'img_gen_tasks', 'img_gen_tasks_default',
-    'gen_tasks_default',
-  ];
-  if (hImg) {
-    sources.push('img_gen_tasks_' + hImg, 'video_gen_tasks_' + hImg);
-    // 旧版组合哈希残留数据
-    if (vk) sources.push('gen_tasks_' + hashKey(ik + '|' + vk));
-    sources.push('gen_tasks_' + hashKey(ik + '|'));
-  }
   const newKey = getTasksStorageKey();
-  for (const src of sources) {
-    if (src === newKey) continue;
+  
+  // 收集需要迁移的源 key，避免边遍历边删除导致索引偏移
+  const sourcesToMigrate = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const src = localStorage.key(i);
+    if (src && src.startsWith('gen_tasks_') && src !== newKey) {
+      sourcesToMigrate.push(src);
+    }
+  }
+  
+  for (const src of sourcesToMigrate) {
     const raw = localStorage.getItem(src);
-    if (!raw) continue;
     let old; try { old = JSON.parse(raw); } catch { continue; }
     if (!Array.isArray(old) || !old.length) { localStorage.removeItem(src); continue; }
+    
     const existRaw = localStorage.getItem(newKey);
     const exist = existRaw ? JSON.parse(existRaw) : [];
     const ids = new Set(exist.map(t => t.taskId));
@@ -217,6 +217,9 @@ function bindEvents() {
   if (dom.btnMockData) {
     dom.btnMockData.addEventListener('click', generateMockTasks);
   }
+  if (dom.pearKeyInput) dom.pearKeyInput.addEventListener('input', saveState);
+  if (dom.geekKeyInput) dom.geekKeyInput.addEventListener('input', saveState);
+  
   if (dom.saveSettingsBtn) {
     dom.saveSettingsBtn.addEventListener('click', () => {
       saveState();
