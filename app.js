@@ -7,22 +7,41 @@ const GEEK_API_BASE = 'https://api.geeknow.top';
 const IMAGE_API = `${PEAR_API_BASE}/api/image_generate`;
 const VIDEO_API = `${PEAR_API_BASE}/api/video_generate`;
 const GEEK_VIDEO_API = `${GEEK_API_BASE}/v1/videos`;
+const VIDEO_MODEL_CACHE_KEY = 'gen_video_models_cache_v2';
 const IMGBB_KEY = 'c2d0c798539d2dab9107049c7f544d1d';
 const POLL_INTERVAL = 5000;
 const ASSET_VERSION = '20260607-5';
-const VIDEO_MODEL_META = {
-  'gemini-omni-1080-10s': { seconds: 10, maxImages: 3, label: 'Gemini Omni 1080 10s' },
-  'sora-2-12s': { seconds: 12, maxImages: 1, label: 'Sora 2 12s' },
-  'veo-3.1-fast': { seconds: 5, maxImages: 2, label: 'Veo 3.1 Fast' },
-  'grok-video-3': { seconds: 5, maxImages: 6, label: 'Grok Video 3', isGeek: true },
-  'grok-video-3-pro': { seconds: 10, maxImages: 6, label: 'Grok Video 3 Pro', isGeek: true },
-  'grok-video-3-max': { seconds: 15, maxImages: 6, label: 'Grok Video 3 Max', isGeek: true },
-  'omni-fast': { seconds: 10, maxImages: 5, label: 'Omni Fast', isGeek: true },
-  'omni-fast-v2v': { seconds: 10, maxImages: 1, label: 'Omni Fast V2V', isGeek: true },
+
+const VIDEO_PROVIDERS = {
+  pear: {
+    name: 'PearAPI',
+    baseUrl: PEAR_API_BASE,
+    pricingUrl: `${PEAR_API_BASE}/api/pricing`,
+    defaultEndpointPath: '/v1/videos/generations',
+    auth: 'bearer',
+  },
+  geek: {
+    name: 'GeekAPI',
+    baseUrl: GEEK_API_BASE,
+    pricingUrl: `${GEEK_API_BASE}/api/pricing`,
+    defaultEndpointPath: '/v1/videos',
+    auth: 'bearer',
+  },
 };
 
+const FALLBACK_VIDEO_MODELS = [
+  { provider: 'pear', id: 'gemini-omni', label: 'gemini-omni', price: 0.4, priceUnit: '次', maxImages: 3, secondsOptions: [4, 6, 8, 10], endpointPath: '/v1/videos/generations', requestMode: 'openai-video' },
+  { provider: 'pear', id: 'sora-2', label: 'sora-2', price: 0.27, priceUnit: '次', maxImages: 1, secondsOptions: [4, 8, 12], endpointPath: '/v1/videos/generations', requestMode: 'openai-video' },
+  { provider: 'pear', id: 'veo-3.1-fast', label: 'veo-3.1-fast', price: 1.28, priceUnit: '次', maxImages: 2, secondsOptions: [5, 8], endpointPath: '/v1/videos/generations', requestMode: 'openai-video' },
+  { provider: 'geek', id: 'grok-video-3', label: 'grok-video-3', price: 0.2, priceUnit: '次', maxImages: 6, secondsOptions: [5], endpointPath: '/v1/videos', requestMode: 'multipart' },
+  { provider: 'geek', id: 'grok-video-3-pro', label: 'grok-video-3-pro', price: 0.2, priceUnit: '次', maxImages: 6, secondsOptions: [10], endpointPath: '/v1/videos', requestMode: 'multipart' },
+  { provider: 'geek', id: 'grok-video-3-max', label: 'grok-video-3-max', price: 0.2, priceUnit: '次', maxImages: 6, secondsOptions: [15], endpointPath: '/v1/videos', requestMode: 'multipart' },
+  { provider: 'geek', id: 'omni-fast', label: 'omni-fast', price: 0.6, priceUnit: '次', maxImages: 5, secondsOptions: [10], endpointPath: '/v1/videos', requestMode: 'json-url' },
+  { provider: 'geek', id: 'omni-fast-v2v', label: 'omni-fast-v2v', price: 1, priceUnit: '次', maxVideos: 1, secondsOptions: [10], endpointPath: '/v1/videos', requestMode: 'json-url' },
+];
+
 function getVideoUrl(data) {
-  return data?.api_file_url || data?.video_url || data?.output?.video_url || null;
+  return data?.api_file_url || data?.video_url || data?.url || data?.output?.video_url || data?.output?.url || data?.data?.video_url || null;
 }
 
 function getImageUrls(data) {
@@ -38,8 +57,16 @@ const state = {
   mode: 'image',
   selectedSize: '16:9',
   uploadedImages: [],
-  videoRefImageUrls: [], // 当前选中用于生成视频的参考图
+  videoRefItems: [],
+  videoRefImageUrls: [], // 兼容旧任务：当前选中用于生成视频的参考图 URL
   videoRefSource: 'uploads',
+  videoModels: [...FALLBACK_VIDEO_MODELS],
+  videoEndpointPaths: {
+    pear: VIDEO_PROVIDERS.pear.defaultEndpointPath,
+    geek: VIDEO_PROVIDERS.geek.defaultEndpointPath,
+  },
+  videoModelsSyncedAt: null,
+  savedVideoModel: '',
 };
 
 // ---- DOM ----
@@ -66,6 +93,8 @@ function cacheDom() {
     ratioGroup:     document.getElementById('ratio-group'),
     dropZone:       document.getElementById('image-drop-zone'),
     fileInput:      document.getElementById('image-file-input'),
+    dropText:       document.querySelector('.drop-text'),
+    dropHint:       document.querySelector('.drop-hint'),
     previewList:    document.getElementById('image-preview-list'),
     imageTip:       document.getElementById('image-tip'),
     promptInput:    document.getElementById('input-prompt'),
@@ -98,9 +127,13 @@ function cacheDom() {
     vdRefList:      document.getElementById('vdialog-ref-list'),
     vdRefLabel:     document.getElementById('vdialog-ref-label'),
     vdModel:        document.getElementById('select-video-model'),
+    vdSeconds:      document.getElementById('select-video-seconds'),
     vdRatio:        document.getElementById('select-video-ratio'),
     vdPrompt:       document.getElementById('input-video-prompt'),
     vdSubmit:       document.getElementById('btn-submit-video'),
+    videoModelInfo: document.getElementById('video-model-info'),
+    videoModelSyncStatus: document.getElementById('video-model-sync-status'),
+    syncVideoModelsBtn: document.getElementById('btn-sync-video-models'),
     // 其他
     toastContainer: document.getElementById('toast-container'),
     canvas:         document.getElementById('particles-canvas'),
@@ -119,6 +152,8 @@ function init() {
   }
   bindEvents();
   loadState();
+  hydrateVideoModelsFromCache();
+  renderVideoModelOptions();
   initParticles();
   window.addEventListener('resize', initParticles);
   updateReferenceText();
@@ -126,6 +161,7 @@ function init() {
   setMode(state.mode);
   renderTaskList();
   resumePolling();
+  syncVideoModels({ silent: true });
 }
 
 // ======================= 存储 =======================
@@ -166,7 +202,7 @@ function loadState() {
     const savedImageModel = localStorage.getItem('gen_image_model');
     if (savedImageModel) dom.modelSelect.value = savedImageModel;
     const savedVideoModel = localStorage.getItem('gen_video_model');
-    if (savedVideoModel) dom.vdModel.value = savedVideoModel;
+    if (savedVideoModel) state.savedVideoModel = savedVideoModel;
     const savedMode = localStorage.getItem('gen_mode');
     if (savedMode) state.mode = savedMode;
     
@@ -205,6 +241,344 @@ function loadTasksForCurrentKey() {
   try { const r = localStorage.getItem(getTasksStorageKey()); state.tasks = r ? JSON.parse(r) : []; } catch { state.tasks = []; }
 }
 
+// ======================= 视频模型同步 =======================
+function getVideoModelValue(model) {
+  return `${model.provider}::${model.id}`;
+}
+
+function getVideoModelsByProvider(provider) {
+  return state.videoModels
+    .filter(m => m.provider === provider)
+    .sort((a, b) => String(a.label || a.id).localeCompare(String(b.label || b.id), 'zh-CN'));
+}
+
+function getSelectedVideoModelValue() {
+  return dom.vdModel?.value || state.savedVideoModel || localStorage.getItem('gen_video_model') || '';
+}
+
+function hydrateVideoModelsFromCache() {
+  try {
+    const raw = localStorage.getItem(VIDEO_MODEL_CACHE_KEY);
+    if (!raw) return;
+    const cache = JSON.parse(raw);
+    if (Array.isArray(cache.models) && cache.models.length) {
+      state.videoModels = mergeVideoModels([...FALLBACK_VIDEO_MODELS, ...cache.models]);
+    }
+    if (cache.endpointPaths) {
+      state.videoEndpointPaths = { ...state.videoEndpointPaths, ...cache.endpointPaths };
+    }
+    state.videoModelsSyncedAt = cache.syncedAt || null;
+  } catch (e) {
+    console.warn('读取视频模型缓存失败:', e);
+  }
+}
+
+async function syncVideoModels({ silent = false } = {}) {
+  setVideoModelSyncStatus('同步中...', 'loading');
+  if (dom.syncVideoModelsBtn) dom.syncVideoModelsBtn.disabled = true;
+
+  const results = await Promise.allSettled(Object.keys(VIDEO_PROVIDERS).map(fetchProviderVideoModels));
+  const syncedModels = [];
+  const syncedProviders = [];
+  const errors = [];
+
+  results.forEach(result => {
+    if (result.status === 'fulfilled') {
+      syncedModels.push(...result.value.models);
+      syncedProviders.push(VIDEO_PROVIDERS[result.value.provider].name);
+      state.videoEndpointPaths[result.value.provider] = result.value.endpointPath;
+    } else {
+      errors.push(result.reason?.message || String(result.reason));
+    }
+  });
+
+  if (syncedModels.length) {
+    state.videoModels = mergeVideoModels([...FALLBACK_VIDEO_MODELS, ...syncedModels]);
+    state.videoModelsSyncedAt = new Date().toISOString();
+    try {
+      localStorage.setItem(VIDEO_MODEL_CACHE_KEY, JSON.stringify({
+        syncedAt: state.videoModelsSyncedAt,
+        endpointPaths: state.videoEndpointPaths,
+        models: state.videoModels.filter(m => !m.isFallback),
+      }));
+    } catch (e) {
+      console.warn('保存视频模型缓存失败:', e);
+    }
+    renderVideoModelOptions({ preserveSelection: true });
+    setVideoModelSyncStatus(`已同步 ${syncedProviders.join(' / ')} · ${formatSyncedAt(state.videoModelsSyncedAt)}`, errors.length ? 'warning' : 'success');
+    if (!silent) showToast('视频模型已同步', 'success');
+  } else {
+    renderVideoModelOptions({ preserveSelection: true });
+    setVideoModelSyncStatus('同步失败，已使用本地兜底模型', 'warning');
+    if (!silent) showToast(errors[0] || '视频模型同步失败', 'warning');
+  }
+
+  if (dom.syncVideoModelsBtn) dom.syncVideoModelsBtn.disabled = false;
+}
+
+async function fetchProviderVideoModels(provider) {
+  const config = VIDEO_PROVIDERS[provider];
+  const resp = await fetch(config.pricingUrl, { cache: 'no-store' });
+  if (!resp.ok) throw new Error(`${config.name} pricing 请求失败: ${resp.status}`);
+  const json = await resp.json();
+  if (json.success === false) throw new Error(`${config.name} pricing 返回失败`);
+
+  const endpointPath = json.supported_endpoint?.['openai-video']?.path || config.defaultEndpointPath;
+  const rawModels = Array.isArray(json.data) ? json.data : [];
+  const models = rawModels
+    .filter(isVideoPricingModel)
+    .map(item => mapPricingVideoModel(provider, item, endpointPath))
+    .filter(Boolean);
+
+  return { provider, endpointPath, models };
+}
+
+function isVideoPricingModel(item) {
+  const name = String(item.model_name || item.id || '');
+  const tags = String(item.tags || '');
+  const endpointTypes = Array.isArray(item.supported_endpoint_types) ? item.supported_endpoint_types : [];
+  const saysVideo = tags.includes('视频') || endpointTypes.includes('openai-video');
+  const videoName = /(video|sora|veo|omni-fast|grok-video|grok-imagine-video|kling|vidu|pixverse|hailuo|sv-|gv-|happyhorse|seedance|doubao-seedance|mingmou|wan\d)/i.test(name);
+  return !!name && (saysVideo || videoName);
+}
+
+function mapPricingVideoModel(provider, item, endpointPath) {
+  const id = String(item.model_name || item.id || '').trim();
+  if (!id) return null;
+  const description = stripHtml(String(item.description || ''));
+  const limits = inferReferenceLimits(id, description, item.tags);
+  const secondsOptions = inferSecondsOptions(id, description);
+  const endpointTypes = Array.isArray(item.supported_endpoint_types) ? item.supported_endpoint_types : [];
+  const priceUnit = item.model_price_type === 'second' || /按秒计费/.test(description) ? '秒' : '次';
+
+  return {
+    provider,
+    id,
+    label: id,
+    description,
+    tags: item.tags || '',
+    price: item.model_price,
+    priceUnit,
+    quotaType: item.quota_type,
+    billingLabels: Array.isArray(item.billing_labels) ? item.billing_labels : [],
+    supportedEndpointTypes: endpointTypes,
+    endpointPath,
+    requestMode: inferRequestMode(provider, id, endpointTypes),
+    secondsOptions,
+    ...limits,
+    isFallback: false,
+  };
+}
+
+function mergeVideoModels(models) {
+  const byKey = new Map();
+  models.forEach(model => {
+    const key = getVideoModelValue(model);
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, normalizeVideoModel(model));
+      return;
+    }
+    const next = normalizeVideoModel({ ...prev, ...model });
+    ['maxImages', 'maxVideos', 'maxAudios'].forEach(field => {
+      if ((model[field] === undefined || model[field] === null) && prev[field] !== undefined) next[field] = prev[field];
+    });
+    if ((!model.secondsOptions || !model.secondsOptions.length) && prev.secondsOptions?.length) next.secondsOptions = prev.secondsOptions;
+    if (!model.requestMode && prev.requestMode) next.requestMode = prev.requestMode;
+    byKey.set(key, next);
+  });
+  return Array.from(byKey.values()).map(model => ({ ...model, maxFiles: getModelMaxFiles(model) }));
+}
+
+function normalizeVideoModel(model) {
+  const normalized = { ...model };
+  normalized.label = normalized.label || normalized.id;
+  normalized.maxImages = Number.isFinite(Number(normalized.maxImages)) ? Number(normalized.maxImages) : 0;
+  normalized.maxVideos = Number.isFinite(Number(normalized.maxVideos)) ? Number(normalized.maxVideos) : 0;
+  normalized.maxAudios = Number.isFinite(Number(normalized.maxAudios)) ? Number(normalized.maxAudios) : 0;
+  normalized.maxFiles = getModelMaxFiles(normalized);
+  normalized.secondsOptions = Array.isArray(normalized.secondsOptions) ? normalized.secondsOptions.map(Number).filter(Boolean) : [];
+  normalized.endpointPath = normalized.endpointPath || VIDEO_PROVIDERS[normalized.provider]?.defaultEndpointPath || '/v1/videos';
+  normalized.requestMode = normalized.requestMode || inferRequestMode(normalized.provider, normalized.id, normalized.supportedEndpointTypes || []);
+  return normalized;
+}
+
+function inferRequestMode(provider, id, endpointTypes = []) {
+  if (endpointTypes.includes('openai-video')) return 'openai-video';
+  if (/grok|imagine|reference|r2v/i.test(id)) return 'multipart';
+  if (provider === 'pear') return 'openai-video';
+  return 'json-url';
+}
+
+function inferReferenceLimits(id, description, tags = '') {
+  const text = `${id} ${description || ''} ${tags || ''}`;
+  const maxImages = findNumber(text, /最多\s*(\d+)\s*(?:张|張)\s*(?:图|圖|图片|圖片)?/i)
+    ?? findNumber(text, /可参考最多\s*(\d+)\s*(?:张|張)/i);
+  const maxVideos = findNumber(text, /最多\s*(\d+)\s*(?:个|個)\s*视频/i)
+    ?? findNumber(text, /[、,，]\s*(\d+)\s*(?:个|個)\s*视频/i)
+    ?? 0;
+  const maxAudios = findNumber(text, /最多\s*(\d+)\s*(?:段|个|個)\s*音频/i)
+    ?? findNumber(text, /[、,，]\s*(\d+)\s*(?:段|个|個)\s*音频/i)
+    ?? 0;
+
+  let inferredImages = maxImages;
+  if (inferredImages === null || inferredImages === undefined) {
+    if (/仅支持单张参考图|单张参考图|单张参考|单参考图|单张图生视频|单参考图生成/.test(text)) inferredImages = 1;
+    else if (/首尾帧|首尾帧视频|首尾/.test(text)) inferredImages = 2;
+    else if (/首帧|参考图生视频|图生视频|参考生视频|支持设置参考图|input_reference|reference|ref|i2v|r2v/i.test(text)) inferredImages = 1;
+    else inferredImages = 0;
+  }
+
+  return { maxImages: inferredImages, maxVideos, maxAudios };
+}
+
+function inferSecondsOptions(id, description = '') {
+  const text = `${id} ${description}`;
+  const nums = new Set();
+  const listMatches = text.match(/\d+(?:\s*\/\s*\d+)+\s*(?:秒|s)/gi) || [];
+  listMatches.forEach(match => {
+    (match.match(/\d+/g) || []).forEach(n => nums.add(Number(n)));
+  });
+  const singleMatches = text.match(/\d+\s*(?:秒|s)/gi) || [];
+  singleMatches.forEach(match => {
+    const n = Number((match.match(/\d+/) || [])[0]);
+    if (n && n <= 60) nums.add(n);
+  });
+  return Array.from(nums).filter(Boolean).sort((a, b) => a - b);
+}
+
+function findNumber(text, regex) {
+  const match = text.match(regex);
+  return match ? Number(match[1]) : null;
+}
+
+function getModelMaxFiles(model) {
+  return (Number(model.maxImages) || 0) + (Number(model.maxVideos) || 0) + (Number(model.maxAudios) || 0);
+}
+
+function stripHtml(text) {
+  return text.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function renderVideoModelOptions({ preserveSelection = false } = {}) {
+  if (!dom.vdModel) return;
+  const previous = preserveSelection ? getSelectedVideoModelValue() : (state.savedVideoModel || getSelectedVideoModelValue());
+  dom.vdModel.innerHTML = '';
+
+  Object.keys(VIDEO_PROVIDERS).forEach(provider => {
+    const models = getVideoModelsByProvider(provider);
+    if (!models.length) return;
+    const group = document.createElement('optgroup');
+    group.label = `${VIDEO_PROVIDERS[provider].name} 视频模型`;
+    models.forEach(model => {
+      const option = document.createElement('option');
+      option.value = getVideoModelValue(model);
+      option.textContent = formatVideoOptionLabel(model);
+      option.title = model.description || option.textContent;
+      group.appendChild(option);
+    });
+    dom.vdModel.appendChild(group);
+  });
+
+  const allValues = state.videoModels.map(getVideoModelValue);
+  if (allValues.includes(previous)) dom.vdModel.value = previous;
+  else {
+    const byLegacyId = state.videoModels.find(model => model.id === previous);
+    dom.vdModel.value = byLegacyId ? getVideoModelValue(byLegacyId) : (allValues[0] || '');
+  }
+
+  state.savedVideoModel = dom.vdModel.value;
+  renderVideoSecondsOptions();
+  updateReferenceText();
+  renderVideoRefPreview();
+  renderVideoModelInfo();
+}
+
+function formatVideoOptionLabel(model) {
+  return `${model.label || model.id} (${formatVideoPrice(model)} · ${formatVideoLimitShort(model)})`;
+}
+
+function formatVideoPrice(model) {
+  if (model.price === undefined || model.price === null || model.price === '') return '价格未知';
+  const n = Number(model.price);
+  if (!Number.isFinite(n)) return String(model.price);
+  return `¥${Number.isInteger(n) ? n : n.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}/${model.priceUnit || '次'}`;
+}
+
+function formatVideoLimitShort(model) {
+  const parts = [];
+  if (model.maxImages) parts.push(`${model.maxImages}图`);
+  if (model.maxVideos) parts.push(`${model.maxVideos}视频`);
+  if (model.maxAudios) parts.push(`${model.maxAudios}音频`);
+  return parts.length ? `参考${parts.join('/')}` : '无参考文件';
+}
+
+function formatVideoLimitLong(model) {
+  const parts = [];
+  if (model.maxImages) parts.push(`图片 ${model.maxImages}`);
+  if (model.maxVideos) parts.push(`视频 ${model.maxVideos}`);
+  if (model.maxAudios) parts.push(`音频 ${model.maxAudios}`);
+  return parts.length ? parts.join(' / ') : '不支持参考文件';
+}
+
+function formatSyncedAt(iso) {
+  if (!iso) return '未同步';
+  try { return new Date(iso).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }); }
+  catch { return '刚刚'; }
+}
+
+function setVideoModelSyncStatus(text, type = 'info') {
+  if (!dom.videoModelSyncStatus) return;
+  dom.videoModelSyncStatus.textContent = text;
+  dom.videoModelSyncStatus.dataset.status = type;
+}
+
+function getVideoModelMeta(value = getSelectedVideoModelValue()) {
+  const [provider, ...idParts] = String(value || '').split('::');
+  const id = idParts.join('::');
+  let model = null;
+  if (provider && id) model = state.videoModels.find(m => m.provider === provider && m.id === id);
+  if (!model && value) model = state.videoModels.find(m => m.id === value || getVideoModelValue(m) === value);
+  return normalizeVideoModel(model || state.videoModels[0] || FALLBACK_VIDEO_MODELS[0]);
+}
+
+function renderVideoSecondsOptions() {
+  if (!dom.vdSeconds) return;
+  const meta = getVideoModelMeta();
+  const previous = dom.vdSeconds.value;
+  dom.vdSeconds.innerHTML = '';
+
+  if (!meta.secondsOptions.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = '默认时长';
+    dom.vdSeconds.appendChild(option);
+    dom.vdSeconds.disabled = true;
+    return;
+  }
+
+  meta.secondsOptions.forEach(seconds => {
+    const option = document.createElement('option');
+    option.value = String(seconds);
+    option.textContent = `${seconds} 秒`;
+    dom.vdSeconds.appendChild(option);
+  });
+  dom.vdSeconds.disabled = false;
+  dom.vdSeconds.value = meta.secondsOptions.map(String).includes(previous) ? previous : String(meta.secondsOptions[meta.secondsOptions.length - 1]);
+}
+
+function renderVideoModelInfo() {
+  if (!dom.videoModelInfo) return;
+  const meta = getVideoModelMeta();
+  const provider = VIDEO_PROVIDERS[meta.provider]?.name || meta.provider;
+  dom.videoModelInfo.innerHTML = `
+    <span>${provider}</span>
+    <span>${formatVideoPrice(meta)}</span>
+    <span>${formatVideoLimitLong(meta)}</span>
+    <span>${esc(meta.endpointPath || '')}</span>
+  `;
+}
+
 // ======================= 事件绑定 =======================
 function bindEvents() {
   // 设置显隐
@@ -232,9 +606,10 @@ function bindEvents() {
   if (dom.togglePearKey) dom.togglePearKey.addEventListener('click', () => { dom.pearKeyInput.type = dom.pearKeyInput.type === 'password' ? 'text' : 'password'; });
   if (dom.toggleGeekKey) dom.toggleGeekKey.addEventListener('click', () => { dom.geekKeyInput.type = dom.geekKeyInput.type === 'password' ? 'text' : 'password'; });
   
-  // 额度查询
+  // 额度查询 / 模型同步
   if (dom.queryPearBtn) dom.queryPearBtn.addEventListener('click', () => queryQuota('pear'));
   if (dom.queryGeekBtn) dom.queryGeekBtn.addEventListener('click', () => queryQuota('geek'));
+  if (dom.syncVideoModelsBtn) dom.syncVideoModelsBtn.addEventListener('click', () => syncVideoModels({ silent: false }));
 
   // 字数
   dom.promptInput.addEventListener('input', () => { dom.charCount.textContent = dom.promptInput.value.length; });
@@ -242,7 +617,7 @@ function bindEvents() {
   dom.modeSwitch.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-mode]');
     if (!btn) return;
-    if (btn.dataset.mode === 'video') setMode('video', { refs: getUploadedImageUrls(), source: 'uploads' });
+    if (btn.dataset.mode === 'video') setMode('video', { refs: getUploadedVideoRefItems(), source: 'uploads' });
     else setMode('image');
   });
 
@@ -261,7 +636,7 @@ function bindEvents() {
   dom.dropZone.addEventListener('dragleave', () => dom.dropZone.classList.remove('dragover'));
   dom.dropZone.addEventListener('drop', (e) => {
     e.preventDefault(); dom.dropZone.classList.remove('dragover');
-    const f = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+    const f = Array.from(e.dataTransfer.files);
     if (f.length) handleFiles(f);
   });
   dom.previewList.addEventListener('click', (e) => {
@@ -282,7 +657,15 @@ function bindEvents() {
   dom.videoModalOverlay.addEventListener('click', (e) => { if (e.target === dom.videoModalOverlay) closeVideoModal(); });
 
   dom.modelSelect.addEventListener('change', saveState);
-  dom.vdModel.addEventListener('change', () => { saveState(); updateReferenceText(); renderVideoRefPreview(); });
+  dom.vdModel.addEventListener('change', () => {
+    state.savedVideoModel = dom.vdModel.value;
+    renderVideoSecondsOptions();
+    saveState();
+    updateReferenceText();
+    renderVideoRefPreview();
+    renderVideoModelInfo();
+  });
+  if (dom.vdSeconds) dom.vdSeconds.addEventListener('change', saveState);
 
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeImageModal(); closeVideoModal(); } });
 
@@ -369,25 +752,100 @@ async function uploadToImgbb(file) {
   });
 }
 
-// ======================= 图片处理 =======================
+// ======================= 文件处理 =======================
+function getFileKind(file) {
+  if (file.type.startsWith('image/')) return 'image';
+  if (file.type.startsWith('video/')) return 'video';
+  if (file.type.startsWith('audio/')) return 'audio';
+  return 'file';
+}
+
+function getAcceptedKindsForCurrentMode() {
+  return state.mode === 'video' ? ['image', 'video', 'audio'] : ['image'];
+}
+
+function getMaxUploadsForCurrentMode() {
+  if (state.mode !== 'video') return 8;
+  const meta = getVideoModelMeta();
+  return Math.max(getModelMaxFiles(meta), 0) || 8;
+}
+
+function getKindCountLimit(kind) {
+  if (state.mode !== 'video') return kind === 'image' ? 8 : 0;
+  const meta = getVideoModelMeta();
+  if (kind === 'image') return meta.maxImages || 0;
+  if (kind === 'video') return meta.maxVideos || 0;
+  if (kind === 'audio') return meta.maxAudios || 0;
+  return 0;
+}
+
+function countUploadedKind(kind) {
+  return state.uploadedImages.filter(item => item.kind === kind).length;
+}
+
+function filterAllowedFiles(files) {
+  const allowedKinds = getAcceptedKindsForCurrentMode();
+  const accepted = [];
+  const skipped = [];
+  for (const file of Array.from(files)) {
+    const kind = getFileKind(file);
+    const kindLimit = getKindCountLimit(kind);
+    if (!allowedKinds.includes(kind) || (state.mode === 'video' && kindLimit <= 0)) {
+      skipped.push(file.name);
+      continue;
+    }
+    if (state.mode === 'video' && countUploadedKind(kind) + accepted.filter(f => getFileKind(f) === kind).length >= kindLimit) {
+      skipped.push(file.name);
+      continue;
+    }
+    accepted.push(file);
+  }
+  return { accepted, skipped };
+}
+
 function handleFiles(files) {
-  const remaining = 8 - state.uploadedImages.length;
-  if (remaining <= 0) { showToast('最多支持 8 张参考图片', 'warning'); return; }
-  const list = Array.from(files).filter(f => f.type.startsWith('image/')).slice(0, remaining);
-  if (list.length < files.length) showToast(`仅上传前 ${list.length} 张`, 'warning');
+  const maxUploads = getMaxUploadsForCurrentMode();
+  const remaining = maxUploads - state.uploadedImages.length;
+  if (remaining <= 0) { showToast(`当前最多支持 ${maxUploads} 个参考文件`, 'warning'); return; }
+
+  const { accepted, skipped } = filterAllowedFiles(files);
+  const list = accepted.slice(0, remaining);
+  if (skipped.length || list.length < accepted.length) showToast('部分文件超过当前模型限制，已自动跳过', 'warning');
+  if (!list.length) return;
+
   list.forEach(file => {
-    const img = { id: Date.now() + Math.random(), fileName: file.name, previewUrl: URL.createObjectURL(file), imgbbUrl: null, uploading: true, error: null };
-    state.uploadedImages.push(img);
+    const kind = getFileKind(file);
+    const item = {
+      id: Date.now() + Math.random(),
+      file,
+      kind,
+      fileName: file.name,
+      previewUrl: URL.createObjectURL(file),
+      imgbbUrl: null,
+      uploading: kind === 'image',
+      error: null,
+    };
+    state.uploadedImages.push(item);
     renderImagePreviews();
-    uploadToImgbb(file)
-      .then(url => { img.imgbbUrl = url; img.uploading = false; renderImagePreviews(); })
-      .catch(err => { img.uploading = false; img.error = err.message; renderImagePreviews(); showToast(`${file.name} 上传失败`, 'error'); });
+
+    if (kind === 'image') {
+      uploadToImgbb(file)
+        .then(url => { item.imgbbUrl = url; item.uploading = false; renderImagePreviews(); })
+        .catch(err => {
+          item.uploading = false;
+          item.error = err.message;
+          renderImagePreviews();
+          showToast(state.mode === 'video' ? `${file.name} 图床上传失败，视频仍可用原文件` : `${file.name} 上传失败`, state.mode === 'video' ? 'warning' : 'error');
+        });
+    }
   });
 }
+
 function removeUploadedImage(id) {
   const i = state.uploadedImages.findIndex(x => x.id === id);
   if (i !== -1) { URL.revokeObjectURL(state.uploadedImages[i].previewUrl); state.uploadedImages.splice(i, 1); renderImagePreviews(); }
 }
+
 function renderImagePreviews() {
   updateReferenceText();
   if (!state.uploadedImages.length) {
@@ -397,24 +855,48 @@ function renderImagePreviews() {
     return;
   }
   dom.imageTip.style.display = 'block';
-  dom.previewList.innerHTML = state.uploadedImages.map((img, i) => `
-    <div class="img-preview-item ${img.uploading ? 'uploading' : ''} ${img.error ? 'error' : ''}">
-      <img src="${img.previewUrl}" alt="${esc(img.fileName)}" class="img-thumb" />
+  dom.previewList.innerHTML = state.uploadedImages.map((item, i) => `
+    <div class="img-preview-item ${item.uploading ? 'uploading' : ''} ${item.error ? 'error' : ''}">
+      ${renderReferenceThumb(item)}
       <div class="img-info">
-        <span class="img-name">${esc(img.fileName)}</span>
-        <span class="img-label">图片 ${i + 1}</span>
-        ${img.uploading ? '<span class="img-status uploading-text">上传中...</span>' : ''}
-        ${img.error ? `<span class="img-status error-text">${esc(img.error)}</span>` : ''}
-        ${img.imgbbUrl ? '<span class="img-status success-text">✓ 已上传</span>' : ''}
+        <span class="img-name">${esc(item.fileName)}</span>
+        <span class="img-label">${formatRefKind(item.kind)} ${i + 1}</span>
+        ${item.uploading ? '<span class="img-status uploading-text">图床上传中，视频可直接用原文件</span>' : ''}
+        ${item.error ? `<span class="img-status error-text">${esc(item.error)}</span>` : ''}
+        ${item.kind === 'image' && item.imgbbUrl ? '<span class="img-status success-text">✓ 已上传 URL</span>' : ''}
+        ${item.kind !== 'image' ? '<span class="img-status success-text">✓ 将作为原文件上传</span>' : ''}
       </div>
-      <button class="img-remove-btn" data-id="${img.id}" title="移除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg></button>
+      <button class="img-remove-btn" data-id="${item.id}" title="移除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg></button>
     </div>`).join('');
   syncVideoRefsFromUploads();
 }
-function getUploadedImageUrls() {
-  return state.uploadedImages.filter(x => x.imgbbUrl && !x.uploading && !x.error).map(x => x.imgbbUrl);
+
+function renderReferenceThumb(item) {
+  if (item.kind === 'image') return `<img src="${item.previewUrl}" alt="${esc(item.fileName)}" class="img-thumb" />`;
+  const label = item.kind === 'video' ? 'VID' : (item.kind === 'audio' ? 'AUD' : 'FILE');
+  return `<div class="file-thumb ${item.kind}"><span>${label}</span></div>`;
 }
 
+function formatRefKind(kind) {
+  return { image: '图片', video: '视频', audio: '音频' }[kind] || '文件';
+}
+
+function getUploadedImageUrls() {
+  return state.uploadedImages.filter(x => x.kind === 'image' && x.imgbbUrl && !x.uploading && !x.error).map(x => x.imgbbUrl);
+}
+
+function getUploadedVideoRefItems() {
+  return state.uploadedImages
+    .filter(x => (x.file || !x.error) && ['image', 'video', 'audio'].includes(x.kind))
+    .map(x => ({
+      source: 'upload',
+      kind: x.kind,
+      file: x.file,
+      url: x.imgbbUrl,
+      previewUrl: x.previewUrl,
+      fileName: x.fileName,
+    }));
+}
 // ======================= 图片生成 (PearAPI) =======================
 // Pro 模型不支持异步模式，需要走同步
 const SYNC_ONLY_MODELS = ['nano-banana-pro', 'nano-banana-pro-4k'];
@@ -519,16 +1001,19 @@ function setMode(mode, options = {}) {
   dom.imageActionPanel.classList.toggle('active', !isVideo);
   dom.videoModePanel.classList.toggle('active', isVideo);
   dom.videoActionPanel.classList.toggle('active', isVideo);
+  updateFileInputAccept();
 
   if (isVideo) {
     if (Object.prototype.hasOwnProperty.call(options, 'refs')) {
-      state.videoRefImageUrls = normalizeVideoRefs(options.refs);
+      state.videoRefItems = normalizeVideoRefs(options.refs);
+      state.videoRefImageUrls = state.videoRefItems.map(ref => ref.url).filter(Boolean);
       state.videoRefSource = options.source || 'task';
     } else if (state.videoRefSource !== 'task') {
-      state.videoRefImageUrls = getUploadedImageUrls();
+      state.videoRefItems = getUploadedVideoRefItems();
+      state.videoRefImageUrls = state.videoRefItems.map(ref => ref.url).filter(Boolean);
       state.videoRefSource = 'uploads';
     }
-    if (!dom.vdPrompt.value.trim() && state.videoRefImageUrls.length) {
+    if (!dom.vdPrompt.value.trim() && state.videoRefItems.length) {
       dom.vdPrompt.value = '让@图1中的画面动起来';
     }
     renderVideoRefPreview();
@@ -537,46 +1022,75 @@ function setMode(mode, options = {}) {
   }
 
   updateReferenceText();
+  renderVideoModelInfo();
+}
+
+function updateFileInputAccept() {
+  if (!dom.fileInput) return;
+  dom.fileInput.accept = state.mode === 'video' ? 'image/*,video/*,audio/*' : 'image/*';
 }
 
 function updateReferenceText() {
   if (state.mode === 'video') {
     const meta = getVideoModelMeta();
-    dom.referenceTitle.textContent = '视频参考图';
-    dom.referenceSub.textContent = `(当前模型最多${meta.maxImages}张, 选填)`;
-    dom.imageTip.textContent = '💡 视频提示词中用 @图1、@图2 引用对应参考图';
+    dom.referenceTitle.textContent = '视频参考文件';
+    dom.referenceSub.textContent = `(${formatVideoLimitLong(meta)}, 选填)`;
+    dom.imageTip.textContent = '💡 视频提示词中可用 @图1、@视频1、@音频1 引用对应参考文件';
+    if (dom.dropText) dom.dropText.innerHTML = '拖拽参考文件到此处，或 <span class="drop-link">点击上传</span>';
+    if (dom.dropHint) dom.dropHint.textContent = '支持图片 / 视频 / 音频，按当前模型限制自动筛选';
   } else {
     dom.referenceTitle.textContent = '参考图片';
     dom.referenceSub.textContent = '(最多8张, 选填)';
     dom.imageTip.textContent = '💡 提示词中用"图片1""图片2"引用对应参考图';
+    if (dom.dropText) dom.dropText.innerHTML = '拖拽图片到此处，或 <span class="drop-link">点击上传</span>';
+    if (dom.dropHint) dom.dropHint.textContent = '支持 JPG / PNG / WebP';
   }
 }
 
 function syncVideoRefsFromUploads() {
   if (state.mode !== 'video' || state.videoRefSource === 'task') return;
-  state.videoRefImageUrls = getUploadedImageUrls();
+  state.videoRefItems = getUploadedVideoRefItems();
+  state.videoRefImageUrls = state.videoRefItems.map(ref => ref.url).filter(Boolean);
   renderVideoRefPreview();
 }
 
-// ======================= 视频生成 (PearAPI Grok) =======================
-function getVideoModelMeta(model = dom.vdModel.value) {
-  return VIDEO_MODEL_META[model] || { seconds: '', maxImages: 1, label: model };
-}
-
+// ======================= 视频生成 =======================
 function normalizeVideoRefs(refs) {
   if (!refs) return [];
   const list = Array.isArray(refs) ? refs : [refs];
-  return list.filter(Boolean);
+  return list.filter(Boolean).map((ref, index) => {
+    if (typeof ref === 'string') {
+      return { source: 'url', kind: 'image', url: ref, previewUrl: ref, fileName: `参考图${index + 1}` };
+    }
+    return {
+      source: ref.source || 'upload',
+      kind: ref.kind || 'image',
+      file: ref.file || null,
+      url: ref.url || ref.imgbbUrl || null,
+      previewUrl: ref.previewUrl || ref.url || ref.imgbbUrl || '',
+      fileName: ref.fileName || ref.name || `参考文件${index + 1}`,
+    };
+  });
 }
 
 function getLimitedVideoRefs() {
-  const max = getVideoModelMeta().maxImages || 1;
-  return state.videoRefImageUrls.slice(0, max);
+  const meta = getVideoModelMeta();
+  const max = getModelMaxFiles(meta);
+  if (max <= 0) return [];
+  const counts = { image: 0, video: 0, audio: 0 };
+  const limits = { image: meta.maxImages || 0, video: meta.maxVideos || 0, audio: meta.maxAudios || 0 };
+  const refs = [];
+  for (const ref of state.videoRefItems) {
+    if (!limits[ref.kind] || counts[ref.kind] >= limits[ref.kind]) continue;
+    refs.push(ref);
+    counts[ref.kind] += 1;
+  }
+  return refs.slice(0, max);
 }
 
 function renderVideoRefPreview() {
   const refs = getLimitedVideoRefs();
-  const total = state.videoRefImageUrls.length;
+  const total = state.videoRefItems.length;
   if (!refs.length) {
     dom.vdRef.style.display = 'none';
     dom.vdRefList.innerHTML = '';
@@ -585,105 +1099,168 @@ function renderVideoRefPreview() {
   }
 
   dom.vdRef.style.display = '';
-  dom.vdRefList.innerHTML = refs.map((url, i) => `
-    <div class="vdialog-ref-item">
-      <img src="${url}" alt="参考图${i + 1}" />
-      <span>@图${i + 1}</span>
-    </div>
-  `).join('');
+  const kindIndex = { image: 0, video: 0, audio: 0 };
+  dom.vdRefList.innerHTML = refs.map(ref => {
+    kindIndex[ref.kind] = (kindIndex[ref.kind] || 0) + 1;
+    const tag = ref.kind === 'image' ? `@图${kindIndex[ref.kind]}` : (ref.kind === 'video' ? `@视频${kindIndex[ref.kind]}` : `@音频${kindIndex[ref.kind]}`);
+    const thumb = ref.kind === 'image' && (ref.previewUrl || ref.url)
+      ? `<img src="${ref.previewUrl || ref.url}" alt="${esc(ref.fileName)}" />`
+      : `<div class="file-thumb ${ref.kind}"><span>${ref.kind === 'video' ? 'VID' : 'AUD'}</span></div>`;
+    return `<div class="vdialog-ref-item">${thumb}<span>${tag}</span></div>`;
+  }).join('');
 
   const meta = getVideoModelMeta();
-  const trimmed = total > refs.length ? `，已按模型限制取前 ${refs.length} 张` : '';
-  dom.vdRefLabel.textContent = `参考图 ${refs.length}/${meta.maxImages}${trimmed}`;
+  const trimmed = total > refs.length ? `，已按模型限制取前 ${refs.length} 个` : '';
+  dom.vdRefLabel.textContent = `参考文件 ${refs.length}/${getModelMaxFiles(meta)}${trimmed}`;
 }
 
 function openVideoDialog(imageRefs) {
   setMode('video', { refs: imageRefs, source: 'task' });
-  dom.vdPrompt.value = state.videoRefImageUrls.length ? '让@图1中的画面动起来' : dom.vdPrompt.value;
+  dom.vdPrompt.value = state.videoRefItems.length ? '让@图1中的画面动起来' : dom.vdPrompt.value;
   document.getElementById('config-panel')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+
+function getProviderApiKey(provider) {
+  return provider === 'geek' ? dom.geekKeyInput.value.trim() : dom.pearKeyInput.value.trim();
+}
+
+function getProviderVideoEndpoint(meta) {
+  const provider = VIDEO_PROVIDERS[meta.provider];
+  const path = meta.endpointPath || state.videoEndpointPaths[meta.provider] || provider.defaultEndpointPath;
+  return `${provider.baseUrl}${path}`;
+}
+
+function getSelectedSeconds() {
+  const value = dom.vdSeconds && !dom.vdSeconds.disabled ? dom.vdSeconds.value : '';
+  return value ? Number(value) : null;
+}
+
+function buildVideoRequest(meta, apiKey, prompt, refs) {
+  const url = getProviderVideoEndpoint(meta);
+  const seconds = getSelectedSeconds();
+  const hasLocalFile = refs.some(ref => ref.file);
+  const useMultipart = hasLocalFile || meta.requestMode === 'multipart';
+  const headers = { Authorization: `Bearer ${apiKey}` };
+
+  if (useMultipart) {
+    const fd = new FormData();
+    fd.append('model', meta.id);
+    fd.append('prompt', prompt);
+    fd.append('aspect_ratio', dom.vdRatio.value);
+    if (seconds) fd.append('seconds', String(seconds));
+    refs.forEach(ref => appendReferenceToFormData(fd, ref));
+    return { url, options: { method: 'POST', headers, body: fd } };
+  }
+
+  const body = { model: meta.id, prompt, aspect_ratio: dom.vdRatio.value };
+  if (seconds) body.seconds = seconds;
+  appendReferenceUrlsToBody(body, refs, meta);
+  return {
+    url,
+    options: { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+  };
+}
+
+function appendReferenceToFormData(fd, ref) {
+  if (ref.file) fd.append('input_reference', ref.file, ref.file.name || ref.fileName || 'reference');
+  else if (ref.url) fd.append('input_reference', ref.url);
+}
+
+function appendReferenceUrlsToBody(body, refs, meta) {
+  const urls = refs.map(ref => ref.url).filter(Boolean);
+  if (!urls.length) return;
+  if (meta.requestMode === 'openai-video') {
+    body.input_reference = urls.length === 1 ? urls[0] : urls;
+    return;
+  }
+  if (urls.length === 1) body.first_image_url = urls[0];
+  else if (urls.length === 2) { body.first_image_url = urls[0]; body.last_image_url = urls[1]; }
+  else body.images = urls;
+}
+
+async function readJsonResponse(resp) {
+  const text = await resp.text();
+  let json = {};
+  try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
+  if (!resp.ok || json.error || (json.code && json.code !== 200)) {
+    throw new Error(json.error?.message || json.msg || json.detail || json.message || `请求失败: ${resp.status}`);
+  }
+  return json;
+}
+
+function getVideoTaskData(json) {
+  if (json.data && typeof json.data === 'object') return json.data;
+  return json;
+}
+
+function getVideoTaskId(json) {
+  const data = getVideoTaskData(json);
+  return json.id || json.task_id || data.id || data.task_id || data.taskId || '';
+}
+
+function normalizeVideoStatus(status) {
+  const s = String(status || '').toLowerCase();
+  if (['completed', 'complete', 'succeeded', 'success', 'finished'].includes(s)) return 'completed';
+  if (['failed', 'fail', 'error', 'cancelled', 'canceled'].includes(s)) return 'failed';
+  if (['running', 'processing', 'in_progress', 'generating'].includes(s)) return 'running';
+  return s || 'queued';
+}
+
+function getReferencePreviewUrls(refs) {
+  return refs.filter(ref => ref.kind === 'image').map(ref => ref.url || ref.previewUrl).filter(Boolean);
+}
+
+function getReferenceFileSummary(refs) {
+  return refs.map(ref => ({ kind: ref.kind, name: ref.fileName || ref.file?.name || ref.url || '参考文件' }));
 }
 
 async function submitVideoTask() {
   const prompt = dom.vdPrompt.value.trim();
-  const model = dom.vdModel.value;
-  const meta = VIDEO_MODEL_META[model] || {};
-  const isGeek = !!meta.isGeek;
-  const apiKey = isGeek ? dom.geekKeyInput.value.trim() : dom.pearKeyInput.value.trim();
-  
-  if (!apiKey) return showToast(`请输入 ${isGeek ? 'GeekAPI' : 'PearAPI'} API Key`, 'error');
+  const meta = getVideoModelMeta();
+  const apiKey = getProviderApiKey(meta.provider);
+  const providerName = VIDEO_PROVIDERS[meta.provider]?.name || meta.provider;
+
+  if (!apiKey) return showToast(`请输入 ${providerName} API Key`, 'error');
   if (!prompt) return showToast('请输入视频提示词', 'error');
-  if (state.videoRefSource !== 'task' && state.uploadedImages.some(x => x.uploading)) return showToast('请等待参考图片上传完成', 'warning');
 
-  if (state.videoRefSource !== 'task') state.videoRefImageUrls = getUploadedImageUrls();
-  const imageUrls = getLimitedVideoRefs();
-
-  let reqUrl, reqOptions;
-  if (isGeek) {
-    reqUrl = GEEK_VIDEO_API;
-    const isGrok = model.includes('grok');
-    if (isGrok) {
-      const fd = new FormData();
-      fd.append('model', model);
-      fd.append('prompt', prompt);
-      fd.append('aspect_ratio', dom.vdRatio.value);
-      if (meta.seconds) fd.append('seconds', meta.seconds);
-      imageUrls.forEach(url => fd.append('input_reference', url));
-      reqOptions = {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${apiKey}` },
-        body: fd
-      };
-    } else {
-      const body = { model, prompt, aspect_ratio: dom.vdRatio.value };
-      if (meta.seconds) body.seconds = String(meta.seconds);
-      if (imageUrls.length === 1) body.first_image_url = imageUrls[0];
-      else if (imageUrls.length === 2) { body.first_image_url = imageUrls[0]; body.last_image_url = imageUrls[1]; }
-      else if (imageUrls.length > 2) body.images = imageUrls;
-      reqOptions = {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      };
-    }
-  } else {
-    reqUrl = VIDEO_API;
-    const body = { key: apiKey, prompt, model, aspect_ratio: dom.vdRatio.value };
-    if (imageUrls.length) body.images = imageUrls;
-    reqOptions = {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    };
+  if (state.videoRefSource !== 'task') {
+    state.videoRefItems = getUploadedVideoRefItems();
+    state.videoRefImageUrls = state.videoRefItems.map(ref => ref.url).filter(Boolean);
   }
+  const refs = getLimitedVideoRefs();
+  if (state.videoRefItems.length && !refs.length) return showToast('当前模型不支持参考文件，请移除后再生成', 'warning');
 
+  const request = buildVideoRequest(meta, apiKey, prompt, refs);
   setSubmitLoading(dom.vdSubmit, true, '生成中...');
   try {
-    const resp = await fetch(reqUrl, reqOptions);
-    const json = await resp.json();
-    let taskId = '';
-    if (isGeek) {
-      if (json.id || json.task_id) taskId = json.id || json.task_id;
-      else throw new Error(json.error?.message || json.msg || JSON.stringify(json));
-    } else {
-      if (json.code !== 200 || !json.data?.task_id) throw new Error(json.msg || json.detail || JSON.stringify(json));
-      taskId = json.data.task_id;
-    }
+    const resp = await fetch(request.url, request.options);
+    const json = await readJsonResponse(resp);
+    const data = getVideoTaskData(json);
+    const taskId = getVideoTaskId(json);
+    if (!taskId && !getVideoUrl(data)) throw new Error(json.msg || json.detail || JSON.stringify(json).slice(0, 200));
 
     const task = {
-      type: 'video', id: Date.now(), taskId: taskId,
-      status: (isGeek ? json.status : json.data?.status) || 'queued',
-      progress: (isGeek ? json.progress : json.data?.progress) || 0,
-      model: model, prompt,
-      videoUrl: getVideoUrl(isGeek ? json : json.data),
-      imageRef: imageUrls[0] || null,
-      imageRefs: imageUrls,
+      type: 'video', id: Date.now(), taskId: taskId || `sync_video_${Date.now()}`,
+      status: normalizeVideoStatus(data.status || json.status),
+      progress: data.progress ?? json.progress ?? 0,
+      provider: meta.provider,
+      model: meta.id,
+      prompt,
+      videoUrl: getVideoUrl(data) || getVideoUrl(json),
+      imageRef: getReferencePreviewUrls(refs)[0] || null,
+      imageRefs: getReferencePreviewUrls(refs),
+      referenceFiles: getReferenceFileSummary(refs),
       errorMsg: null,
-      videoLength: meta.seconds || '',
+      videoLength: getSelectedSeconds() || '',
       videoRatio: dom.vdRatio.value,
+      endpointPath: meta.endpointPath,
+      pollMode: meta.provider === 'pear' && meta.endpointPath === '/api/video_generate' ? 'legacy-pear' : 'openai-video',
       createdAt: now(),
-      isGeek: isGeek
+      isGeek: meta.provider === 'geek',
     };
     if (task.videoUrl) { task.status = 'completed'; task.progress = 100; }
+    if (!task.status || task.status === 'queued') task.status = task.videoUrl ? 'completed' : 'queued';
+
     state.tasks.unshift(task); saveState(); renderTaskList();
     if (task.status === 'completed') showToast('视频生成完成！', 'success');
     else { startVideoPolling(task.taskId); showToast('视频任务已提交（异步）', 'success'); }
@@ -695,62 +1272,61 @@ async function submitVideoTask() {
   }
 }
 
+function buildVideoPollRequest(t, taskId) {
+  const provider = t.provider || (t.isGeek ? 'geek' : 'pear');
+  const apiKey = getProviderApiKey(provider);
+  if (!apiKey) return null;
+
+  if (provider === 'pear' && (t.pollMode === 'legacy-pear' || !t.provider)) {
+    return {
+      provider,
+      url: VIDEO_API,
+      options: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: apiKey, taskid: taskId }) },
+      contentUrl: null,
+    };
+  }
+
+  const providerConfig = VIDEO_PROVIDERS[provider];
+  const endpointPath = t.endpointPath || state.videoEndpointPaths[provider] || providerConfig.defaultEndpointPath;
+  const base = `${providerConfig.baseUrl}${endpointPath}/${taskId}`;
+  return {
+    provider,
+    url: base,
+    options: { method: 'GET', headers: { Authorization: `Bearer ${apiKey}` } },
+    contentUrl: `${base}/content`,
+  };
+}
+
 function startVideoPolling(taskId) {
   if (state.pollers[taskId]) return;
   const poll = async () => {
     const t = state.tasks.find(x => x.taskId === taskId); if (!t) return stopPolling(taskId);
-    let key, reqUrl, reqOptions;
-    if (t.isGeek) {
-      key = dom.geekKeyInput.value.trim(); if (!key) return;
-      reqUrl = `${GEEK_VIDEO_API}/${taskId}`;
-      reqOptions = { method: 'GET', headers: { 'Authorization': `Bearer ${key}` } };
-    } else {
-      key = dom.pearKeyInput.value.trim(); if (!key) return;
-      reqUrl = VIDEO_API;
-      reqOptions = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, taskid: taskId }) };
-    }
+    const req = buildVideoPollRequest(t, taskId);
+    if (!req) return;
 
     try {
-      const r = await fetch(reqUrl, reqOptions);
-      const j = await r.json();
-      
-      let isSuccess = false;
-      let data = null;
-      let errorMsg = '';
-      if (t.isGeek) {
-        if (!j.error && j.status) { isSuccess = true; data = j; }
-        else { errorMsg = j.error?.message || '视频任务查询失败'; }
-      } else {
-        if (j.code === 200 && j.data) { isSuccess = true; data = j.data; }
-        else { errorMsg = j.msg || j.detail || '视频任务查询失败'; }
-      }
+      const r = await fetch(req.url, req.options);
+      const j = await readJsonResponse(r);
+      const data = getVideoTaskData(j);
+      t.pollErrorCount = 0;
+      t.status = normalizeVideoStatus(data.status || j.status || t.status);
+      t.progress = data.progress ?? j.progress ?? t.progress;
+      t.model = data.model || t.model;
+      t.videoUrl = getVideoUrl(data) || getVideoUrl(j) || t.videoUrl;
 
-      if (isSuccess && data) {
-        t.pollErrorCount = 0;
-        t.status = data.status || t.status;
-        t.progress = data.progress ?? t.progress;
-        t.model = data.model || t.model;
-        t.videoUrl = getVideoUrl(data) || t.videoUrl;
-        if (t.status === 'completed') {
-          t.progress = 100;
-          stopPolling(taskId);
-          if (t.isGeek && !t.videoUrl) t.videoUrl = `${GEEK_VIDEO_API}/${taskId}/content`;
-          if (!t.videoUrl) t.errorMsg = '视频已完成，但未返回视频地址';
-          showToast(t.videoUrl ? '视频生成完成！' : '视频生成完成但未返回地址', t.videoUrl ? 'success' : 'warning');
-        }
-        if (t.status === 'failed') {
-          t.errorMsg = data.error?.message || j.detail || j.msg || '视频任务失败';
-          stopPolling(taskId);
-          showToast(t.errorMsg, 'error');
-        }
-        saveState(); updateTaskCard(taskId);
-      } else {
-        t.status = 'failed';
-        t.errorMsg = errorMsg || '视频任务查询失败';
+      if (t.status === 'completed') {
+        t.progress = 100;
         stopPolling(taskId);
-        saveState(); updateTaskCard(taskId);
+        if (!t.videoUrl && req.contentUrl) t.videoUrl = req.contentUrl;
+        if (!t.videoUrl) t.errorMsg = '视频已完成，但未返回视频地址';
+        showToast(t.videoUrl ? '视频生成完成！' : '视频生成完成但未返回地址', t.videoUrl ? 'success' : 'warning');
+      }
+      if (t.status === 'failed') {
+        t.errorMsg = data.error?.message || j.detail || j.msg || '视频任务失败';
+        stopPolling(taskId);
         showToast(t.errorMsg, 'error');
       }
+      saveState(); updateTaskCard(taskId);
     } catch (e) {
       const t = state.tasks.find(x => x.taskId === taskId); if (!t) return stopPolling(taskId);
       t.pollErrorCount = (t.pollErrorCount || 0) + 1;
@@ -765,7 +1341,6 @@ function startVideoPolling(taskId) {
   };
   poll(); state.pollers[taskId] = setInterval(poll, POLL_INTERVAL);
 }
-
 // ======================= 渲染任务列表 =======================
 function renderTaskList() {
   if (!state.tasks.length) { dom.emptyState.style.display = 'flex'; dom.taskList.innerHTML = ''; }
@@ -800,11 +1375,17 @@ function buildTaskCard(t) {
     mediaHTML = `<div class="task-thumb-area">${t.imageUrls.map((u, i) => `<img src="${u}" alt="图片${i+1}" class="task-thumb" data-action="preview-image" data-url="${u}" title="点击预览" />`).join('')}</div>`;
   }
   const refs = isVideo ? getTaskImageRefs(t) : [];
+  const refFiles = isVideo && Array.isArray(t.referenceFiles) ? t.referenceFiles : [];
   if (refs.length) {
     mediaHTML = `
       <div class="task-ref-badge">
         ${refs.slice(0, 5).map((u, i) => `<img src="${u}" class="task-ref-mini" alt="参考图${i + 1}" />`).join('')}
-        <span>参考图${refs.length > 1 ? ` × ${refs.length}` : ''}</span>
+        <span>参考图${refs.length > 1 ? ` × ${refs.length}` : ''}${refFiles.length > refs.length ? `，文件 × ${refFiles.length}` : ''}</span>
+      </div>` + mediaHTML;
+  } else if (refFiles.length) {
+    mediaHTML = `
+      <div class="task-ref-badge">
+        <span>参考文件 × ${refFiles.length}</span>
       </div>` + mediaHTML;
   }
 
@@ -905,7 +1486,7 @@ document.addEventListener('DOMContentLoaded', init);
 function generateMockTasks() {
   // 点击后如果已经有 mock 任务就先清理掉，重新生成 9 个
   state.tasks = state.tasks.filter(t => !(t.taskId && t.taskId.startsWith('mock-task')));
-  const models = ['gemini-omni-1080-10s', 'sora-2-12s', 'veo-3.1-fast', 'grok-video-3', 'omni-fast', 'nano-banana-2'];
+  const models = ['gemini-omni', 'sora-2', 'veo-3.1-fast', 'grok-video-3', 'omni-fast', 'nano-banana-2'];
   const prompts = [
     '一只赛博朋克风格的机器猫穿梭在霓虹闪烁的东京街头',
     '火星基地的日出，宇航员正在采矿',
